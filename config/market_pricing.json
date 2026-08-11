@@ -1,0 +1,50 @@
+{
+  "source": "原表5.xlsx（定价参数来源表，仅作来源备注；参数已固化到本文件，原表未随包分发）",
+  "discount_rate": 0.25,
+  "target_margin": 0.18,
+  "extra_buffer_rate": 0.03,
+  "markets": {
+    "PH": {
+      "currency": "PHP",
+      "commission_rate": 0.125,
+      "payment_rate": 0.0224,
+      "tax_rate": 0,
+      "affiliate_rate": 0.035,
+      "exchange_rate": 0.11,
+      "buyer_shipping": 25,
+      "infrastructure_fee": 5,
+      "packaging_cny": 0.7,
+      "hidden_shipping_base": 10.5,
+      "hidden_shipping_step": 4.5,
+      "round_increment": 1
+    },
+    "TH": {
+      "currency": "THB",
+      "commission_rate": 0.1605,
+      "payment_rate": 0.0321,
+      "tax_rate": 0.3268,
+      "affiliate_rate": 0.04,
+      "exchange_rate": 0.204,
+      "buyer_shipping": 12,
+      "infrastructure_fee": 1.07,
+      "packaging_cny": 0.7,
+      "hidden_shipping_base": 1,
+      "hidden_shipping_step": 1,
+      "round_increment": 1
+    },
+    "VN": {
+      "currency": "VND",
+      "commission_rate": 0.125,
+      "payment_rate": 0.06,
+      "tax_rate": 0.091,
+      "affiliate_rate": 0.03,
+      "exchange_rate": 0.0002367,
+      "buyer_shipping": 5000,
+      "infrastructure_fee": 3000,
+      "packaging_cny": 0.7,
+      "hidden_shipping_base": 10900,
+      "hidden_shipping_step": 900,
+      "round_increment": 1000
+    }
+  }
+}

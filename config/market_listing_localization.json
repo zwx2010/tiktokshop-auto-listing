@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "markets": {
+    "PH": {
+      "language_code": "en-PH",
+      "language_name": "English",
+      "title_instruction": "Write the customer-facing title in natural English used by Philippines TikTok Shop shoppers.",
+      "description_instruction": "Write the description in clear natural English for shoppers in the Philippines.",
+      "required_script_regex": "[A-Za-z]",
+      "product_lines": {
+        "womens": {
+          "seo_terms": [
+            "women fashion",
+            "summer outfit",
+            "casual wear",
+            "daily wear",
+            "Korean style",
+            "slim fit",
+            "office look"
+          ]
+        },
+        "accessories": {
+          "seo_terms": [
+            "women accessories",
+            "fashion accessory",
+            "daily outfit",
+            "minimalist style",
+            "Korean style",
+            "gift idea"
+          ]
+        }
+      },
+      "native_example": "women fashion accessory for daily outfit styling"
+    },
+    "TH": {
+      "language_code": "th-TH",
+      "language_name": "Thai",
+      "title_instruction": "เขียนชื่อสินค้าส่วนที่อยู่ระหว่าง RoseSeek และ Style เป็นภาษาไทยที่เป็นธรรมชาติ ต้องมีตัวอักษรไทย และห้ามเขียนเนื้อหาชื่อเป็นภาษาอังกฤษทั้งหมด อนุญาตคำประเภทสินค้าอังกฤษสั้นๆ ได้ไม่เกินสองคำ",
+      "description_instruction": "เขียนรายละเอียดสินค้าเป็นภาษาไทยที่เป็นธรรมชาติสำหรับลูกค้า TikTok Shop ประเทศไทย และต้องมีตัวอักษรไทย",
+      "required_script_regex": "[\\u0E00-\\u0E7F]",
+      "product_lines": {
+        "womens": {
+          "seo_terms": [
+            "แฟชั่นผู้หญิง",
+            "เสื้อผ้าผู้หญิง",
+            "สไตล์เกาหลี",
+            "ใส่ทุกวัน",
+            "ชุดลำลอง",
+            "สาวออฟฟิศ",
+            "แฟชั่นหน้าร้อน"
+          ]
+        },
+        "accessories": {
+          "seo_terms": [
+            "เครื่องประดับผู้หญิง",
+            "แฟชั่นผู้หญิง",
+            "สไตล์เกาหลี",
+            "มินิมอล",
+            "ใส่ทุกวัน",
+            "แต่งตัว",
+            "ของขวัญผู้หญิง"
+          ]
+        }
+      },
+      "native_example": "เครื่องประดับผู้หญิงสไตล์มินิมอลสำหรับใส่ทุกวัน"
+    },
+    "VN": {
+      "language_code": "vi-VN",
+      "language_name": "Vietnamese",
+      "title_instruction": "Viết phần nội dung tiêu đề nằm giữa RoseSeek và Style chủ yếu bằng tiếng Việt tự nhiên, phải có dấu tiếng Việt và không được viết toàn bộ nội dung bằng tiếng Anh. Chỉ được dùng tối đa hai cụm từ loại sản phẩm tiếng Anh ngắn.",
+      "description_instruction": "Viết mô tả bằng tiếng Việt tự nhiên dành cho khách hàng TikTok Shop Việt Nam và phải sử dụng tiếng Việt có dấu.",
+      "required_script_regex": "[\\u00C0-\\u024F\\u1E00-\\u1EFFĐđ]",
+      "product_lines": {
+        "womens": {
+          "seo_terms": [
+            "thời trang nữ",
+            "quần áo nữ",
+            "phong cách Hàn Quốc",
+            "mặc hàng ngày",
+            "đồ công sở",
+            "thời trang mùa hè",
+            "dáng ôm"
+          ]
+        },
+        "accessories": {
+          "seo_terms": [
+            "phụ kiện nữ",
+            "trang sức thời trang",
+            "phong cách Hàn Quốc",
+            "tối giản",
+            "phối đồ hàng ngày",
+            "quà tặng nữ",
+            "phụ kiện thời trang"
+          ]
+        }
+      },
+      "native_example": "phụ kiện nữ phong cách tối giản để phối đồ hàng ngày"
+    }
+  }
+}

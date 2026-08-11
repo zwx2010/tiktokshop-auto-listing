@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>TikTokShop 多账号自动化运营平台</title>
+<style>
+  :root { --bg:#0f1117; --card:#1a1d27; --line:#2a2e3d; --txt:#e6e9f0; --muted:#8b93a7;
+          --accent:#6c8cff; --ok:#34d399; --warn:#fbbf24; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
+  header { padding:22px 28px; border-bottom:1px solid var(--line); display:flex;
+           align-items:baseline; gap:16px; }
+  header h1 { margin:0; font-size:20px; }
+  header .sub { color:var(--muted); font-size:13px; }
+  .wrap { padding:24px 28px; }
+  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:26px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .card .num { font-size:30px; font-weight:700; color:var(--accent); }
+  .card .label { color:var(--muted); font-size:13px; margin-top:4px; }
+  section { margin-bottom:30px; }
+  section h2 { font-size:15px; color:var(--muted); margin-bottom:10px; text-transform:uppercase; letter-spacing:.5px; }
+  .btn { display:inline-block; padding:6px 14px; border-radius:8px; background:var(--accent);
+         color:#fff; font-size:13px; text-decoration:none; margin-left:10px; vertical-align:middle; }
+  .btn:hover { filter:brightness(1.1); }
+  .sec-head { display:flex; align-items:center; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; font-size:13px; }
+  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; }
+  tr:last-child td { border-bottom:none; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; }
+  .tag.th { background:#312e81; color:#a5b4fc; }
+  .tag.ph { background:#134e4a; color:#5eead4; }
+  .tag.vn { background:#581c87; color:#d8b4fe; }
+  .tag.ok { background:#064e3b; color:#34d399; }
+  .tag.warn { background:#78350f; color:#fbbf24; }
+  .muted { color:var(--muted); }
+  .path { font-family:Consolas,monospace; font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛍 TikTokShop 多账号自动化运营平台</h1>
+  <span class="sub">Python + SQLite · 1688 CDP 采集 · Coze/Claude AI · 飞书机器人</span>
+</header>
+
+<div class="wrap">
+  <div class="cards">
+    <div class="card"><div class="num">{{ stats.accounts }}</div><div class="label">账号 Accounts</div></div>
+    <div class="card"><div class="num">{{ stats.products }}</div><div class="label">商品 Products</div></div>
+    <div class="card"><div class="num">{{ stats.skus }}</div><div class="label">SKU</div></div>
+    <div class="card"><div class="num">{{ stats.listings }}</div><div class="label">上架记录 Listings</div></div>
+  </div>
+
+  <section>
+    <h2>账号</h2>
+    <table>
+      <tr><th>ID</th><th>名称</th><th>站点</th><th>店铺</th><th>状态</th><th>API</th><th>健康分</th></tr>
+      {% for a in accounts %}
+      <tr>
+        <td>{{ a.id }}</td><td>{{ a.name }}</td>
+        <td><span class="tag {{ a.market_code|lower }}">{{ a.market_code }}</span></td>
+        <td>{{ a.store_name }}</td>
+        <td>{{ a.status }}</td><td>{{ a.api_status }}</td><td>{{ a.health_score }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>最近商品（拼多多采集 → 清洗 → 入库）</h2>
+      <a class="btn" href="/api/products/export" download>⬇ 导出Excel</a>
+    </div>
+    <table>
+      <tr><th>ID</th><th>goods_id</th><th>类目</th><th>中文标题</th><th>颜色/款式</th><th>成本(CNY)</th><th>成本来源</th><th>图</th><th>采集时间</th><th>状态</th></tr>
+      {% for p in products %}
+      <tr>
+        <td>{{ p.id }}</td>
+        <td class="path">{{ p.source_goods_id }}</td>
+        <td>{{ p.category }}</td>
+        <td title="{{ p.title_cn }}">{{ p.title_cn[:32] }}</td>
+        <td>{{ p.skus|length }} SKU</td>
+        <td>{{ p.cost_cny_used }}</td>
+        <td>{{ p.cost_source }}</td>
+        <td>{{ p.image_urls|length }}</td>
+        <td class="path">{{ p.created_at_local }}</td>
+        <td>{{ p.status }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section>
+    <h2>最近上架记录（Coze 文案 + 定价）</h2>
+    <table>
+      <tr><th>ID</th><th>站点</th><th>标题</th><th>展示价</th><th>目标价</th><th>币种</th><th>SKU</th><th>状态</th></tr>
+      {% for l in listings %}
+      <tr>
+        <td>{{ l.id }}</td>
+        <td><span class="tag {{ l.market_code|lower }}">{{ l.market_code }}</span></td>
+        <td title="{{ l.title }}">{{ l.title[:44] }}</td>
+        <td>{{ l.price }}</td>
+        <td>{{ l.target_sale_price }}</td>
+        <td>{{ l.currency }}</td>
+        <td>{{ l.sku_snapshot|length }}</td>
+        <td><span class="tag ok">{{ l.listing_status }}</span></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <p class="path">数据来自真实拼多多采集（runs/smoke_01）· 定价参数见 config/market_pricing.json</p>
+</div>
+</body>
+</html>

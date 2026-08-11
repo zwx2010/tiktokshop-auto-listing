@@ -1,0 +1,689 @@
+"""审批状态机(内存) + 飞书回调接线 —— 采集→待审→通过/驳回→上架。
+
+状态存内存 dict(key=run_id),运行期够用;M4 可落库到 platform.db 的 Task.state 做持久化。
+"""
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import uuid
+
+from ..feishu import client as fc
+from . import tasks
+
+_lock = threading.Lock()
+_STATE = {}          # run_id -> {status, params, decision, created_at, updated_at}
+_TRIGGER_UPLOAD = True   # 审批通过后自动触发真实 CDP 上架;测试可关
+
+
+def _now():
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def create(run_id, params=None, card_data=None):
+    st = {"status": "pending", "params": params or {}, "card_data": card_data or {},
+          "decision": "", "created_at": _now(), "updated_at": _now(),
+          "last_error": "", "upload_result": None}
+    with _lock:
+        _STATE[run_id] = st
+    return run_id
+
+
+def get(run_id):
+    with _lock:
+        st = _STATE.get(run_id)
+        return dict(st) if st else None
+
+
+def list_runs():
+    with _lock:
+        return [{"run_id": rid, **dict(v)} for rid, v in _STATE.items()]
+
+
+def transition(run_id, decision, trigger_upload=None):
+    """decision: approve_all / approve_ok / reject。通过则后台真上架,立即返回。"""
+    trigger = _TRIGGER_UPLOAD if trigger_upload is None else trigger_upload
+    with _lock:
+        st = _STATE.get(run_id)
+        if not st:
+            return {"ok": False, "detail": f"unknown run {run_id}"}
+        if st["status"] != "pending":
+            return {"ok": False, "detail": f"already {st['status']}"}
+        st["status"] = "approved" if decision != "reject" else "rejected"
+        st["decision"] = decision
+        st["updated_at"] = _now()
+        snapshot = dict(st)
+    mode = (snapshot.get("params") or {}).get("mode", "upload")
+    if snapshot["status"] == "approved" and trigger:
+        # 只审不传:审批通过也不触发上架(用户只要求审图把关)
+        if mode == "review_only":
+            with _lock:
+                st = _STATE.get(run_id)
+                if st:
+                    st["upload_status"] = "skipped"
+            return {"ok": True, "run_id": run_id, "status": snapshot["status"],
+                    "decision": decision, "upload_status": "skipped",
+                    "detail": "review_only:审批通过,不触发上架(只审不传)"}
+        # 真上架耗时数分钟,不在回调里同步等(飞书 3s 超时)。
+        # 后台线程跑真实上传,完成后推「上架结果卡」回群。
+        _launch_upload(run_id, snapshot["params"])
+    upload_status = ""
+    with _lock:
+        st = _STATE.get(run_id)
+        if st:
+            upload_status = st.get("upload_status", "")
+    return {"ok": True, "run_id": run_id, "status": snapshot["status"],
+            "decision": decision, "upload_status": upload_status}
+
+
+def _launch_upload(run_id, params):
+    """后台线程跑 upload stage(真实 CDP 上架),结果写回状态并推结果卡。"""
+    with _lock:
+        st = _STATE.get(run_id)
+        if st:
+            st["upload_status"] = "running"
+            st["upload_result"] = None
+
+    def _run():
+        try:
+            # 真实 CDP 上传 10 款要几分钟,默认 300s 不够;给足 15 分钟
+            result = tasks.run_stage("upload", {**params, "run_id": run_id}, timeout_s=900)
+        except Exception as exc:
+            result = {"ok": False, "stage": "upload", "error": str(exc)}
+        with _lock:
+            st = _STATE.get(run_id)
+            if st:
+                st["upload_status"] = "done"
+                st["upload_result"] = result
+        _push_result_card(run_id, result)
+
+    threading.Thread(target=_run, name=f"upload-{run_id}", daemon=True).start()
+
+
+def _push_result_card(run_id, result):
+    """上架完成后推一张结果卡回群(真实 ok/fail,不做粉饰)。"""
+    if not result or not result.get("ok"):
+        detail = str((result or {}).get("error") or (result or {}).get("detail") or "上架失败")
+        fc.deliver_card(fc.approval_card(
+            title=f"上架结果 #{run_id}", color="red",
+            fields=[("状态", "上架失败"), ("原因", detail[:100]), ("run_id", run_id)],
+            buttons=[]))
+        return
+    sr = result.get("stage_result") or {}
+    ok, fail = sr.get("ok") or 0, sr.get("fail") or 0
+    color = "green" if ok and fail == 0 else "red"
+    fc.deliver_card(fc.approval_card(
+        title=f"上架结果 #{run_id}", color=color,
+        fields=[("模式", str(sr.get("mode", "?"))), ("成功", str(ok)),
+                ("失败", str(fail)), ("run_id", run_id)],
+        buttons=[]))
+
+
+# ---------------------------------------------------------------- 飞书回调
+def on_card_action(body):
+    """卡片按钮回调。兼容两种 body 结构:
+    - 事件订阅卡片回调: {action:{value:{run_id, action}}}
+    - 卡片回调 URL(schema 2.0): {event:{action:{value:{run_id, action}}}}
+    两种都把 run_id / action 放在 action.value 里,这里统一取。"""
+    event = body.get("event") or {}
+    act = event.get("action") or body.get("action") or {}
+    value = act.get("value") or {}
+    run_id = value.get("run_id") or body.get("run_id")
+    decision = value.get("action") or body.get("action")
+    if not run_id or not decision:
+        return {"ok": False, "detail": "missing run_id/action"}
+    return transition(run_id, decision)
+
+
+def on_message(body):
+    """事件订阅消息回调(降级路径:自建应用订阅消息 → 群关键词审批)。"""
+    try:
+        event = body.get("event") or {}
+        # schema 2.0: 事件类型在 header.event_type;schema 1.0: 在 event.type
+        header = body.get("header") or {}
+        etype = (event.get("type") or header.get("event_type")
+                 or body.get("type"))
+        if etype != "im.message.receive_v1":
+            print(f"[on_message] ignored type={etype}", flush=True)
+            return {"ok": True, "ignored": etype}
+        msg = event.get("message") or {}
+        content = json.loads(msg.get("content") or "{}").get("text", "")
+        print(f"[on_message] receive_v1 content={content!r}", flush=True)
+    except Exception:
+        content = ""
+    return handle_instruction(content)
+
+
+# ---------------------------------------------------------------- 编排
+_MARKET_ALIASES = [
+    # (关键词, market) 按优先级排:先长词后短词,避免 "泰" 先命中 "泰国店"
+    ("泰国", "th"), ("泰", "th"), ("th", "th"), ("泰文", "th"),
+    ("越南", "vn"), ("越", "vn"), ("vn", "vn"), ("越文", "vn"),
+    ("菲律宾", "ph"), ("菲", "ph"), ("ph", "ph"), ("英文", "ph"),
+]
+_MARKET_LABEL = {"ph": "菲律宾 PH", "th": "泰国 TH", "vn": "越南 VN"}
+_MODE_LABEL = {"upload": "上架", "review_only": "只审不传", "capture_only": "只采集",
+               "capture_db": "采集入库", "stop": "不执行", "reject": "无法理解"}
+
+
+def _detect_market(text):
+    """从指令文本识别市场;识别不到返回 "ph"(现有流水线默认)。"""
+    low = (text or "").lower()
+    for kw, mkt in _MARKET_ALIASES:
+        if kw in low:
+            return mkt
+    return "ph"
+
+
+# 消息里有没有"想让我们干活"的信号;没有(纯问候/闲聊/无关问题)判 reject,不触发流水线
+_ACTION_HINTS = ("采", "审", "传", "跑", "出", "表", "批", "货", "款", "看",
+                 "生成", "做", "搞", "弄", "来", "上")
+
+
+def _is_actionable(t):
+    """是否像一条要干活的指令(正则兜底用)。带数字 / 命中动作词 → True。"""
+    t = (t or "").strip()
+    if not t:
+        return False
+    if re.search(r"\d", t):
+        return True
+    return any(h in t for h in _ACTION_HINTS)
+
+
+def _detect_mode(text):
+    """从指令文本识别模式(正则兜底,优先长词)。"""
+    t = (text or "").strip()
+    # 明确说不执行 → stop(绝不跑全流水线)
+    if re.search(r"(暂停|先别|别跑|别动|不要跑|不用跑|取消|不执行|停下|先不要|先别跑)", t):
+        return "stop"
+    # 采集并写进平台库(优先级高于 capture_only:到库信号更具体)
+    if re.search(r"(到库|入库|存库|进库|存进库里|收进库里|写进库)", t):
+        return "capture_db"
+    # 只采集,不制表不审图不上架
+    if re.search(r"(只采|先采|采集一下|就采)", t):
+        return "capture_only"
+    # 只审不传:跑完采集/制表/审图,审批通过也不上架
+    if re.search(r"(只审|先审|不传|别传|只看不|先看看|不上架|别上架)", t):
+        return "review_only"
+    # 无关/闲聊/问候,没有任何干活信号 → 无法理解,不执行
+    if not _is_actionable(t):
+        return "reject"
+    return "upload"
+
+
+def parse_instruction(text):
+    """从群指令里解析采集参数(正则兜底;主路径是 _interpret 的 LLM agent)。"""
+    text = text or ""
+    # 先剥掉 @机器人/@_user_1 等提及token,否则 "10个" 前先匹配到 mention 里的数字
+    text = re.sub(r"@\S+", "", text)
+    m = re.search(r"(\d+)", text)
+    target = int(m.group(1)) if m else 0  # 无数字=0(出全部合格候选),不再默认 20
+    cat = next((kw for kw in ("项链", "耳环", "手链", "戒指", "发饰", "配饰")
+                if kw in text), "")
+    return {"target": target, "category": cat,
+            "market": _detect_market(text), "mode": _detect_mode(text),
+            "source": "feishu", "note": ""}
+
+
+def _interpret(text):
+    """主路径:把剥掉 @ 后的原始消息交给 interpret agent(LLM)理解意图。
+
+    用 skill + RAG 事实(市场/品类/成本窗口)解析数量/市场/模式/品类;
+    agent 结果非法或调用失败时,回退到正则 parse_instruction(永远有兜底)。
+    返回规范化意图 dict:
+      {target, market, category, mode, note, source}
+    """
+    clean = re.sub(r"@\S+", "", text or "").strip()
+    fallback = parse_instruction(clean)  # 正则兜底
+    try:
+        # LLM 理解是加分项;超时/失败立即走正则兜底,不等满 120s
+        res = tasks.run_stage("interpret", {"message": clean}, timeout_s=45)
+        sr = _stage_dict(res)
+        note = str(sr.get("note") or "").strip()
+    except Exception as exc:
+        print(f"[interpret] stage error: {exc}", flush=True)
+        sr, note = {}, ""
+
+    def _int(v):
+        try:
+            n = int(v)
+            return n if n >= 0 else 0
+        except (TypeError, ValueError):
+            return None
+
+    # 逐字段校验:LLM 给的值可信才用,否则用正则兜底(不信任未校验的 LLM 输出)
+    target = _int(sr.get("target"))
+    if target is None:
+        target = fallback["target"]
+    market = str(sr.get("market") or "").strip().lower()
+    if market not in ("ph", "th", "vn"):
+        market = fallback["market"]
+    mode = str(sr.get("mode") or "").strip()
+    if mode not in ("upload", "review_only", "capture_db", "capture_only", "stop", "reject"):
+        mode = fallback["mode"]
+    category = str(sr.get("category") or "").strip()
+    if category not in ("项链", "耳环", "手链", "戒指", "发饰", "配饰"):
+        category = fallback["category"]
+    return {"target": target, "market": market, "category": category,
+            "mode": mode, "note": note or f"LLM解析({sr.get('market')}/{sr.get('mode')}/{sr.get('target')})"
+            if sr else f"正则兜底:{clean[:30]}", "source": "interpret" if sr else "regex"}
+
+
+def _db_sample_cost(market=""):
+    """从平台库取一个真实成本价(cost_cny_used)做 RAG 抽查。
+
+    上架表 price 列是本地化售价(如 254),不是成本;RAG 的 --cost 要
+    [2,40] 窗口内的人民币成本。export 脚本本身只选窗口内商品,库里的
+    成本都是真值,取一个即可。读不到返回 None。
+    """
+    from ..config import BASE_DIR
+    db = os.path.join(str(BASE_DIR), "data", "platform.db")
+    if not os.path.exists(db):
+        return None
+    try:
+        import sqlite3
+        con = sqlite3.connect(db)
+        cur = con.cursor()
+        q = ("SELECT cost_cny_used FROM products "
+             "WHERE cost_cny_used IS NOT NULL AND cost_cny_used BETWEEN 2 AND 40")
+        args = []
+        if market:
+            q += " AND UPPER(market_code) = ?"
+            args.append(market.upper())
+        q += " ORDER BY RANDOM() LIMIT 1"
+        cur.execute(q, args)
+        row = cur.fetchone()
+        con.close()
+        return float(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+
+
+def _db_sample_title(market=""):
+    """从平台库取一个真实中文标题做 RAG 抽查样例。
+
+    RAG 规则层的 required_title_patterns 全是中文词(发圈/耳环/项链…),
+    上架表里的 product_name 是英文,喂给它恒判 category 失败(误报)。
+    这里跟 _db_sample_cost 同窗口抽样一条 title_cn,代表当前候选集。
+    读不到返回 ""。
+    """
+    from ..config import BASE_DIR
+    db = os.path.join(str(BASE_DIR), "data", "platform.db")
+    if not os.path.exists(db):
+        return ""
+    try:
+        import sqlite3
+        con = sqlite3.connect(db)
+        cur = con.cursor()
+        q = ("SELECT title_cn FROM products WHERE title_cn IS NOT NULL "
+             "AND trim(title_cn) != '' AND cost_cny_used BETWEEN 2 AND 40")
+        args = []
+        if market:
+            q += " AND UPPER(market_code) = ?"
+            args.append(market.upper())
+        q += " ORDER BY RANDOM() LIMIT 1"
+        cur.execute(q, args)
+        row = cur.fetchone()
+        con.close()
+        return str(row[0]).strip() if row and row[0] else ""
+    except Exception:
+        return ""
+
+
+def _first_row(table):
+    """读上架表首个真商品行,取 标题(product_name)/价格(price) 做 RAG 抽查样例。
+
+    上架表 xlsx 顶部有模板说明行(create_product/metric 等),需扫描到含
+    product_name 的英文表头,再跳过模板标记行取首个真商品。真表真数据,
+    读不到就返回空(编排用默认值兜底,不报错)。
+    """
+    import os
+    if not table or not os.path.exists(table):
+        return {}, ""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(table, read_only=True)
+        ws = wb["Template"] if "Template" in wb.sheetnames else wb.active
+        rows = ws.iter_rows(values_only=True)
+        header = None
+        for r in rows:
+            if any(isinstance(c, str) and c.strip() == "product_name" for c in (r or [])):
+                header = [str(c) if c is not None else "" for c in r]
+                break
+        if not header:
+            wb.close()
+            return {}, table
+        pi = next((i for i, h in enumerate(header) if h.strip() == "product_name"), None)
+        pr = next((i for i, h in enumerate(header) if h.strip() == "price"), None)
+        skip = {"create_product", "metric", "category_v2", "商品名称", "产品名称",
+                "必填", "选填", "商品描述", "产品描述"}
+        for r in rows:
+            if not r or not any(c is not None and str(c).strip() for c in r):
+                continue
+            title = str(r[pi]).strip() if (pi is not None and pi < len(r) and r[pi] is not None) else ""
+            if not title or title in skip:
+                continue
+            # 真商品行判据:price 列可解析成数字;模板说明行(商品名称必须少于…)的价格是非数字
+            price = r[pr] if (pr is not None and pr < len(r)) else None
+            try:
+                cost = float(price)
+            except (TypeError, ValueError):
+                continue
+            d = {"title": title, "cost": cost}
+            wb.close()
+            return d, table
+        wb.close()
+        return {}, table
+    except Exception:
+        return {}, table
+
+
+def _count_products(table):
+    """读真上架表,返回 (去重商品数, SKU行数)。读不到返回 (0,0),不抛。
+
+    同一扫描逻辑:product_name 表头 + price 列可解析成数字才算真商品行。
+    上架表按 SKU 铺行(product_name 重复),所以商品数要按标题去重。
+    """
+    import os
+    if not table or not os.path.exists(table):
+        return 0, 0
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(table, read_only=True)
+        ws = wb["Template"] if "Template" in wb.sheetnames else wb.active
+        rows = ws.iter_rows(values_only=True)
+        header = None
+        for r in rows:
+            if any(isinstance(c, str) and c.strip() == "product_name" for c in (r or [])):
+                header = [str(c) if c is not None else "" for c in r]
+                break
+        if not header:
+            wb.close()
+            return 0, 0
+        pi = next((i for i, h in enumerate(header) if h.strip() == "product_name"), None)
+        pr = next((i for i, h in enumerate(header) if h.strip() == "price"), None)
+        skip = {"create_product", "metric", "category_v2", "商品名称", "产品名称",
+                "必填", "选填", "商品描述", "产品描述"}
+        products: list[str] = []
+        sku_rows = 0
+        for r in rows:
+            if not r or not any(c is not None and str(c).strip() for c in r):
+                continue
+            title = str(r[pi]).strip() if (pi is not None and pi < len(r) and r[pi] is not None) else ""
+            if not title or title in skip:
+                continue
+            price = r[pr] if (pr is not None and pr < len(r)) else None
+            try:
+                float(price)
+            except (TypeError, ValueError):
+                continue
+            sku_rows += 1
+            if title not in products:
+                products.append(title)
+        wb.close()
+        return len(products), sku_rows
+    except Exception:
+        return 0, 0
+
+
+def handle_instruction(text):
+    """群指令 → interpret agent 理解意图 → 按模式分流 → 采集→制表→审图 → 审批卡 → 发飞书群。
+
+    mode 分流:
+      stop          不跑流水线,回"已理解,不执行"卡
+      capture_only  只跑 collect,回采集结果卡(不制表/不审图/不上架)
+      review_only   跑 collect→table→review,审批通过也跳过上架(只审不传)
+      upload(默认)  跑 collect→table→review→审批→真上架
+
+    全真实:collect/table/review 都用 claude -p + skills 真跑脚本;
+    table 输出的真表路径喂给 review(审图跑在真表上),并存进状态供上架用。
+    任一环节失败不中断,失败信息带进审批卡(卡上标注)。
+    """
+    intent = _interpret(text)
+    mode = intent["mode"]
+    run_id = uuid.uuid4().hex[:8]
+    params = {**intent, "run_id": run_id}
+
+    # 明确不执行 / 无法理解:直接回卡,不建 run、不跑任何 stage
+    if mode in ("stop", "reject"):
+        if mode == "reject":
+            fields = [("指令", (text or "")[:30]),
+                      ("理解", "这条不是上架/采集/审图指令,我没法执行"),
+                      ("模式", _MODE_LABEL["reject"])]
+        else:
+            fields = [("指令", (text or "")[:30]),
+                      ("理解", intent.get("note") or "不执行"),
+                      ("模式", _MODE_LABEL["stop"])]
+        sent = fc.deliver_card(fc.approval_card(
+            title="上架机器人", color="grey", fields=fields, buttons=[]))
+        return {"run_id": None, "mode": mode, "intent": intent, "sent": sent}
+
+    create(run_id, params=params)
+    stages = {}
+    p = {**params}
+    timeouts = {"collect": 600, "table": 420, "review": 420}
+
+    # 只采集:跑完 collect 回结果卡就结束(market 已从意图贯穿 collect 提示词)
+    if mode == "capture_only":
+        stages["collect"] = tasks.run_stage("collect", p, timeout_s=timeouts.get("collect", 420))
+        collect = _stage_dict(stages.get("collect"))
+        captured = int(collect.get("captured") or 0)
+        with _lock:
+            st = _STATE.get(run_id)
+            if st:
+                st["candidates"] = captured
+                st["stages"] = {k: _stage_dict(v) for k, v in stages.items()}
+        card_data = build_card(run_id, stages, candidates=captured)
+        sent = fc.deliver_card(fc.approval_card(**card_data))
+        return {"run_id": run_id, "stages": stages, "mode": mode, "card": card_data, "sent": sent}
+
+    # 采集入库:collect(真采集)→ 确定性桥接脚本写平台库 → 回结果卡(不制表/不审图/不上架)
+    if mode == "capture_db":
+        stages["collect"] = tasks.run_stage("collect", p, timeout_s=timeouts.get("collect", 420))
+        collect = _stage_dict(stages.get("collect"))
+        if _stage_err(stages.get("collect")):
+            # 采集失败不跑桥接(避免误把历史 run 灌进库)
+            stages["bridge_to_db"] = {"ok": False, "stage_result": {},
+                                      "error": "采集未成功,跳过入库"}
+        else:
+            stages["bridge_to_db"] = _run_bridge_deterministic(
+                str(collect.get("run_dir") or ""), p.get("market", "ph"))
+        with _lock:
+            st = _STATE.get(run_id)
+            if st:
+                st["stages"] = {k: _stage_dict(v) for k, v in stages.items()}
+        card_data = build_bridge_card(run_id, stages)
+        sent = fc.deliver_card(fc.approval_card(**card_data))
+        return {"run_id": run_id, "stages": stages, "mode": mode, "card": card_data, "sent": sent}
+
+    # upload / review_only:跑完整采集→制表→审图,review_only 时 mode 记入状态,
+    # transition 通过后据此跳过上架
+    for s in ("collect", "table"):
+        stages[s] = tasks.run_stage(s, p, timeout_s=timeouts.get(s, 420))
+
+    # 真编排:table 生成的表喂给 review;并从真表读首行做 RAG 抽查样例
+    # agent 可能把 staging csv 也塞进 out_tables,审图只认 xlsx 上架表,这里过滤
+    tables = [str(t) for t in (_stage_dict(stages.get("table")).get("out_tables") or [])
+              if str(t).lower().endswith(".xlsx")]
+    sample, sample_path = {}, (tables[0] if tables else "")
+    if sample_path:
+        sample, _ = _first_row(sample_path)
+    run_dir = os.path.dirname(os.path.dirname(sample_path)) if sample_path else ""
+    # 成本用平台库真值(表里是售价);窗口 [2,40] 由 export 已保证
+    cost = _db_sample_cost(params.get("market")) or 8
+    # RAG 规则层按中文标题建词表,上架表里的 product_name 是英文;
+    # 用库里的真实中文标题抽查,避免 category 恒判失败(误报)
+    cn_title = _db_sample_title(params.get("market"))
+    p = {**p, "tables": tables, "run_dir": run_dir,
+         "sample_title": cn_title or sample.get("title") or params.get("category", "项链"),
+         "cost": cost}
+    stages["review"] = tasks.run_stage("review", p, timeout_s=timeouts.get("review", 420))
+
+    # 候选数从真表数出去重商品数(表按 SKU 铺行,product_name 重复)
+    candidates, _ = (_count_products(tables[0]) if tables else (0, 0))
+
+    with _lock:
+        st = _STATE.get(run_id)
+        if st:
+            st["params"] = {**st["params"], "tables": tables, "run_dir": run_dir}
+            st["candidates"] = candidates
+            st["stages"] = {k: _stage_dict(v) for k, v in stages.items()}
+
+    card_data = build_card(run_id, stages, candidates=candidates)
+    # 有应用配置走 API(按钮真回调);否则退回 webhook(只能发)
+    sent = fc.deliver_card(fc.approval_card(**card_data))
+    return {"run_id": run_id, "stages": stages, "mode": mode, "card": card_data, "sent": sent}
+
+
+def _stage_dict(stage_res):
+    """取环节结果里的 stage_result;非 dict(字符串/异常/缺失)兜底空 dict,不崩编排。"""
+    if isinstance(stage_res, dict):
+        sr = stage_res.get("stage_result")
+        return sr if isinstance(sr, dict) else {}
+    return {}
+
+
+def _stage_err(stage_res):
+    """取环节顶层/内部的 error;无返回 None。_stage_dict 会丢掉顶层 error,这里补查。"""
+    if not isinstance(stage_res, dict):
+        return None
+    err = stage_res.get("error")
+    if err:
+        return err
+    sr = stage_res.get("stage_result")
+    if isinstance(sr, dict) and sr.get("error"):
+        return sr["error"]
+    return None
+
+
+def _run_bridge_deterministic(run_dir, market):
+    """确定性跑 1688 采集入库脚本(不经 LLM,DB 写入是源头事实)。
+
+    直接 subprocess 调 tools/import_1688_captures_to_db.py,解析它打印的真实 JSON。
+    脚本找不到 run 目录时自己会回退到最新一个 1688 run。
+    """
+    from ..config import BASE_DIR
+    script = os.path.join(str(BASE_DIR), "tools", "import_1688_captures_to_db.py")
+    if not os.path.exists(script):
+        return {"ok": False, "stage": "bridge_to_db", "stage_result": {},
+                "error": f"桥接脚本缺失: {script}"}
+    try:
+        proc = subprocess.run(
+            [sys.executable, script, "--run-dir", run_dir, "--market", str(market or "ph")],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(BASE_DIR), timeout=300)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "stage": "bridge_to_db", "stage_result": {},
+                "error": "采集入库超时(300s)"}
+    err = (proc.stderr or "").strip()[:400]
+    sr = {}
+    # 取 stdout 里最后一个能解析的 JSON 行(脚本只打印一行结果 JSON)
+    for line in reversed((proc.stdout or "").splitlines()):
+        try:
+            obj = json.loads(line.strip())
+            if isinstance(obj, dict):
+                sr = obj
+                break
+        except Exception:
+            continue
+    if not sr and proc.returncode != 0:
+        return {"ok": False, "stage": "bridge_to_db", "stage_result": {},
+                "error": err or "采集入库脚本失败(无 JSON 输出)"}
+    return {"ok": proc.returncode == 0, "stage": "bridge_to_db", "stage_result": sr,
+            "error": "" if proc.returncode == 0 else err}
+
+
+def build_bridge_card(run_id, stages):
+    """采集入库结果卡:真实件数 + 失败如实标注(不掺假,不粉饰)。"""
+    collect = _stage_dict(stages.get("collect"))
+    br = _stage_dict(stages.get("bridge_to_db"))
+    captured = int(collect.get("captured") or 0)
+    imported = int(br.get("imported") or 0)
+    already = int(br.get("already") or 0)
+    skipped = int(br.get("skipped") or 0)
+    errs = br.get("errors") or []
+    fields = [("采集件数", str(captured)),
+              ("入库件数", str(imported)),
+              ("已存在", str(already)),
+              ("跳过", str(skipped)),
+              ("run_id", run_id)]
+    notes = []
+    for name, label in (("collect", "采集"), ("bridge_to_db", "入库")):
+        err = _stage_err(stages.get(name))
+        if err:
+            notes.append(f"{label}失败:{str(err)[:60]}")
+    if errs:
+        notes.append("入库失败: " + ", ".join(
+            f"{e.get('goods_id')}={str(e.get('error'))[:40]}" for e in errs[:3]))
+    for n in notes:
+        fields.append(("⚠️", n))
+    color = "green" if imported and not errs else "red"
+    return {"title": f"采集入库 #{run_id}", "color": color, "fields": fields,
+            "buttons": [], "values": {}}
+
+
+def build_card(run_id, stages, candidates=None):
+    """从各环节结果组装审批卡字段与按钮。
+
+    候选数只信真实数据:优先真表的去重商品数(candidates,编排层从 xlsx 数出),
+    其次采集入库件数(collect.captured),再次真表数量;全空才 "?"。
+    注意 review 环节 agent 只会原样回 schema 里的 "tables":[],不能拿它算。"""
+    collect = _stage_dict(stages.get("collect"))
+    table = _stage_dict(stages.get("table"))
+    review = _stage_dict(stages.get("review"))
+    st = get(run_id) or {}
+    params = st.get("params") or {}
+    market = str(params.get("market") or "ph").lower()
+    mode = str(params.get("mode") or "upload")
+    xlsx = [str(t) for t in (table.get("out_tables") or [])
+            if str(t).lower().endswith(".xlsx")]
+    image_fail = int(review.get("image_fail") or 0)
+    rule_fail = int(review.get("rule_fail") or 0)
+    table_fail = int(review.get("table_fail") or 0)
+    captured = (int(candidates) if candidates else 0) \
+        or int(collect.get("captured") or 0) or len(xlsx) or "?"
+
+    # 环节失败如实标注在卡上(采集挂了候选仍可来自平台库,但卡上要说明)
+    notes = []
+    for name, label in (("collect", "采集"), ("table", "制表"), ("review", "审图")):
+        err = _stage_err(stages.get(name))
+        if err:
+            notes.append(f"{label}失败:{str(err)[:60]}")
+
+    recommend = "驳回" if (image_fail or rule_fail or table_fail) else "通过全部"
+    color = "red" if recommend == "驳回" else "blue"
+    buttons = ["通过全部", "仅通过审图OK", "驳回"]
+    values = {b: {"action": {"通过全部": "approve_all",
+                             "仅通过审图OK": "approve_ok",
+                             "驳回": "reject"}[b],
+                  "run_id": run_id}
+              for b in buttons}
+    # 首行展示 agent 理解结果:市场店铺/模式/数量(直击"内容没被 agent 理解"的抱怨)
+    target = int(params.get("target") or 0)
+    mode_label = _MODE_LABEL.get(mode, mode)
+    market_label = _MARKET_LABEL.get(market, market.upper())
+    target_txt = str(target) if target else "全部候选"
+    fields = [("市场/店铺", market_label),
+              ("模式", mode_label),
+              ("目标数量", target_txt)]
+    if params.get("note"):
+        fields.append(("指令理解", str(params["note"])[:40]))
+    fields += [("候选数", str(captured)),
+               ("成本区间", "¥2-40"),
+               ("审图FAIL", str(image_fail)),
+               ("违禁命中", str(rule_fail)),
+               ("表规FAIL", str(table_fail)),
+               ("run_id", run_id)]
+    for n in notes:
+        fields.append(("⚠️", n))
+    return {
+        "title": f"选品审批 #{run_id}",
+        "fields": fields,
+        "buttons": buttons,
+        "values": values,
+        "color": color,
+        "recommend": recommend,
+    }

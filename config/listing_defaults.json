@@ -1,0 +1,6 @@
+{
+  "default_weight_g": 80,
+  "default_stock": 500,
+  "package_dims": [28, 22, 4],
+  "material": "Polyester blend"
+}
