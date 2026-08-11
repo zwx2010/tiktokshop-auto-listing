@@ -26,8 +26,37 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.database import SessionLocal  # noqa: E402
+from app.feishu import bitable  # noqa: E402
 from app.models import Account, Product  # noqa: E402
 from app.pipeline import ingest_capture  # noqa: E402
+
+
+def _sync_pick_table(product) -> None:
+    """新入库商品写一行到飞书选品采集表(表A)。
+
+    幂等(按商品ID查重);失败只记日志不中断采集——选品表是展示层,
+    平台库才是源头事实。缺飞书配置时 bitable 抛 BitableUnconfigured,同样吞掉。
+    """
+    try:
+        from datetime import timezone
+        created = product.created_at
+        if created and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        result = bitable.pick_upsert({
+            "SPU": product.spu,
+            "商品ID": product.source_goods_id,
+            "标题(中文)": (product.title_cn or "")[:200],
+            "分类": product.category,
+            "成本价(CNY)": float(product.cost_cny_used or 0),
+            "主图": product.main_image_url or "",
+            "目标市场": (product.market_code or "TH").upper(),
+            "采集时间": int(created.timestamp() * 1000) if created else None,
+        })
+        if result == "created":
+            print(f"[bitable] 选品表新增 {product.spu} "
+                  f"{str(product.title_cn)[:20]}", flush=True)
+    except Exception as exc:
+        print(f"[bitable] 选品表同步失败({product.spu}): {exc}", flush=True)
 
 # 与 app/agent/tasks.py 同源：ROSEEK_PKG_DIR 可覆盖，缺省用项目根的相对路径
 _PKG = os.environ.get(
@@ -117,11 +146,14 @@ def main() -> int:
             try:
                 # ingest_capture 幂等：已存在的商品会补建本市场本地化 Listing（多市场多站点），
                 # 不重建商品、不产生脏数据；首采则新建商品 + Listing。
-                ingest_capture(db, cap, market=market_upper, account_id=acc.id)
+                product = ingest_capture(db, cap, market=market_upper,
+                                         account_id=acc.id)
                 if existed:
                     already += 1  # 商品已在库，本次补建 {market_upper} 站点的本地化 Listing
                 else:
                     imported += 1
+                    # 新入库 → 自动写一行到飞书选品表(表A),幂等
+                    _sync_pick_table(product)
             except ValueError as e:
                 skipped += 1  # 降级页/无可用SKU 拒收
                 db.rollback()

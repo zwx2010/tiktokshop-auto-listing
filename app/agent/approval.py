@@ -166,7 +166,8 @@ _MARKET_ALIASES = [
 ]
 _MARKET_LABEL = {"ph": "菲律宾 PH", "th": "泰国 TH", "vn": "越南 VN"}
 _MODE_LABEL = {"upload": "上架", "review_only": "只审不传", "capture_only": "只采集",
-               "capture_db": "采集入库", "stop": "不执行", "reject": "无法理解"}
+               "capture_db": "采集入库", "select_upload": "从采集库生成上架任务",
+               "stop": "不执行", "reject": "无法理解"}
 
 
 def _detect_market(text):
@@ -208,6 +209,10 @@ def _detect_mode(text):
     # 只审不传:跑完采集/制表/审图,审批通过也不上架
     if re.search(r"(只审|先审|不传|别传|只看不|先看看|不上架|别上架)", t):
         return "review_only"
+    # 从采集库按品类选商品 → 生成上架表(表B)行,由轮询跑真实流水线。
+    # 命中形态: "从采集库选3件耳环上架到TH" / "耳环选3件上架到TH" / "选10件手链到PH"
+    if re.search(r"(从采集库|从库|从选品|选品库).*(选|上)|选.*件.*(上架|到(泰国|泰|越南|越|菲律宾|菲|th|ph|vn|TH|PH|VN))", t, re.I):
+        return "select_upload"
     # 无关/闲聊/问候,没有任何干活信号 → 无法理解,不执行
     if not _is_actionable(t):
         return "reject"
@@ -262,7 +267,8 @@ def _interpret(text):
     if market not in ("ph", "th", "vn"):
         market = fallback["market"]
     mode = str(sr.get("mode") or "").strip()
-    if mode not in ("upload", "review_only", "capture_db", "capture_only", "stop", "reject"):
+    if mode not in ("upload", "review_only", "capture_db", "capture_only",
+                    "select_upload", "stop", "reject"):
         mode = fallback["mode"]
     category = str(sr.get("category") or "").strip()
     if category not in ("项链", "耳环", "手链", "戒指", "发饰", "配饰"):
@@ -429,6 +435,104 @@ def _count_products(table):
         return 0, 0
 
 
+# 中文品类词 → 平台库英文 category(与 app/cleaning.infer_category 产出对齐)
+_CN_CATEGORY_TO_EN = {
+    "项链": "Necklace", "耳环": "Earrings", "手链": "Bracelet",
+    "戒指": "Ring", "发饰": "Hair Accessory", "配饰": "",  # 配饰=不过滤
+}
+_SITE_LABEL = {"th": "TH店铺", "ph": "PH店铺", "vn": "VN店铺"}
+_ACTIVE_LISTING_STATUSES = ["待上架", "处理中", "文案生成中", "图片质检中",
+                            "审批中", "上架中"]
+
+
+def _select_upload(text: str, intent: dict) -> dict:
+    """「从采集库按品类选 N 件上架到 X」→ 在上架表(表B)生成待上架行。
+
+    在采集库按 category 选 target 件真实商品(按 id 序;已在上架表有活跃行
+    的同 SPU×同店铺 跳过,防重复),每件写一行: SPU/商品ID/标题/分类/店铺站点/
+    状态=待上架。轮询器随后自动捡走跑真实流水线。
+    没命中 → 如实回「采集库无该品类商品」,不硬凑。
+    """
+    from ..feishu import bitable
+    from ..models import Product
+    from ..database import SessionLocal
+
+    market = str(intent.get("market") or "ph").strip().lower()
+    if market not in ("th", "ph", "vn"):
+        market = "ph"
+    site = _SITE_LABEL[market]
+    cn_cat = str(intent.get("category") or "").strip()
+    en_cat = _CN_CATEGORY_TO_EN.get(cn_cat, "")
+    target = int(intent.get("target") or 0)
+
+    # 已在上架表活跃的行:同 SPU×同店铺 不重复生成
+    try:
+        active = bitable.list_records([
+            ("店铺站点", "is", site),
+            {"conjunction": "or",
+             "conditions": [("状态", "is", st) for st in _ACTIVE_LISTING_STATUSES]},
+        ])
+    except Exception as exc:
+        active = []
+        print(f"[select_upload] 查上架表活跃行失败: {exc}", flush=True)
+    active_spus = {str((r.get("fields") or {}).get("SPU") or "").strip()
+                   for r in active if (r.get("fields") or {}).get("SPU")}
+
+    db = SessionLocal()
+    try:
+        q = db.query(Product).order_by(Product.id)
+        if en_cat:
+            q = q.filter(Product.category == en_cat)
+        products = q.all()
+    finally:
+        db.close()
+    if not products:
+        fields = [("指令", (text or "")[:30]),
+                  ("品类", cn_cat or "全部"),
+                  ("结果", f"采集库没有「{cn_cat}」分类的商品,未生成上架任务"),
+                  ("提示", "先采集入库,选品表/上架表就会自动有数据")]
+        sent = fc.deliver_card(fc.approval_card(
+            title="上架机器人", color="grey", fields=fields, buttons=[]))
+        return {"run_id": None, "mode": "select_upload", "intent": intent,
+                "created": 0, "sent": sent}
+
+    created = 0
+    skipped = 0
+    for p in products:
+        if target and created >= target:
+            break
+        if p.spu and p.spu in active_spus:
+            skipped += 1  # 该 SPU 在目标店铺已有任务在跑,不重复
+            continue
+        fields = {
+            "SPU": p.spu or f"SPU{p.id:06d}",
+            "商品ID": p.source_goods_id,
+            "标题(中文)": (p.title_cn or "")[:200],
+            "分类": p.category or "",
+            "店铺站点": site,
+            "状态": "待上架",
+        }
+        try:
+            bitable.create_record(fields)
+            created += 1
+        except Exception as exc:
+            print(f"[select_upload] 写上架表失败 {p.spu}: {exc}", flush=True)
+    summary = (f"已从采集库选 {created} 件"
+               + (f"「{cn_cat}」" if cn_cat else "全部品类")
+               + f"生成上架任务({site}),轮询会自动跑")
+    if skipped:
+        summary += f";跳过已在上架表有任务的 {skipped} 件"
+    if not created and skipped:
+        summary = f"{site} 上架表已有 {skipped} 件该品类商品在跑,未重复生成"
+    fields = [("指令", (text or "")[:30]),
+              ("模式", _MODE_LABEL["select_upload"]),
+              ("结果", summary)]
+    sent = fc.deliver_card(fc.approval_card(
+        title="上架机器人", color="blue", fields=fields, buttons=[]))
+    return {"run_id": None, "mode": "select_upload", "intent": intent,
+            "created": created, "sent": sent}
+
+
 def handle_instruction(text):
     """群指令 → interpret agent 理解意图 → 按模式分流 → 采集→制表→审图 → 审批卡 → 发飞书群。
 
@@ -460,6 +564,10 @@ def handle_instruction(text):
         sent = fc.deliver_card(fc.approval_card(
             title="上架机器人", color="grey", fields=fields, buttons=[]))
         return {"run_id": None, "mode": mode, "intent": intent, "sent": sent}
+
+    # 从采集库按品类选商品 → 生成上架表行,由轮询跑流水线(不建 run)
+    if mode == "select_upload":
+        return _select_upload(text, intent)
 
     create(run_id, params=params)
     stages = {}

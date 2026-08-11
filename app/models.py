@@ -59,6 +59,7 @@ class Product(Base):
     __tablename__ = "products"
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    spu: Mapped[str] = mapped_column(String(32), default="", unique=True)  # 采集时自动赋予的管理编号 SPU{id:06d}
     source_platform: Mapped[str] = mapped_column(String(16), default="pdd")  # pdd / 1688
     source_goods_id: Mapped[str] = mapped_column(String(64))
     market_code: Mapped[str] = mapped_column(String(2), default="TH")

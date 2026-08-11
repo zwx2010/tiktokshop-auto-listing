@@ -120,6 +120,8 @@ def ingest_capture(
         )
     db.add(product)
     db.flush()
+    # 采集时自动赋予管理编号 SPU(唯一),飞书选品/上架表都拿它关联商品
+    product.spu = f"SPU{product.id:06d}"
 
     build_listing(
         db,

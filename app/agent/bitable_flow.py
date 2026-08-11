@@ -1,12 +1,13 @@
-"""多维表格驱动的上架流程 —— 选品池 → 真实流水线 → 状态/结果回写。
+"""多维表格驱动的上架流程 —— 上架情况表(表B) → 真实流水线 → 状态/结果回写。
 
-运营在表里把商品状态标成「待上架」→ 轮询捡走(拿行即翻→处理中)→ 按市场分组 →
-补商品入库(手动新增的行建真实 Product)→ 补真实文案(缺的用 claude 桥生成)→
-出 TikTok 上架表 → 审图+RAG → 审批卡 → 通过后 CDP 上架。每步把状态写回表,
-完成后回写 上架链接/上架时间/失败原因。
+上架表一行 = SPU×店铺站点 的上架任务。运营在上架表把状态标成「待上架」→
+轮询捡走(拿行即翻→处理中)→ 按店铺站点分组 → 按 SPU/商品ID 从采集库解析商品 →
+补真实文案(缺的用 claude 桥生成)→ 出 TikTok 上架表 → 审图+RAG → 审批卡 →
+通过后 CDP 上架。每步把状态写回表,完成后回写 上架时间/上架链接/失败原因。
 
 全程真实,不掺假:
-  - 补建的商品/文案/表/上架全部走真实来源,不 Mock;
+  - 上架行的商品必须已在采集库真实存在(采集链路自动写入选品表并入库);
+    查不到的行如实标「上架失败」,绝不从行字段编造补建;
   - 文案生成失败或 RAG 规则拦截 → 该行标「上架失败」,绝不带空/假文案上架;
   - 上架结果是批次级的(卖家后台只给成功/失败件数),无法逐件定位失败款,
     回写时如实写批次总数到「备注」,不粉饰逐件状态。
@@ -68,6 +69,29 @@ def _row_goods_id(row) -> str:
     return ""
 
 
+def _row_spu(row) -> str:
+    f = row.get("fields") or {}
+    v = f.get("SPU")
+    return str(v).strip() if v not in (None, "") else ""
+
+
+# 上架表「店铺站点」单选 → 市场代码
+_SITE_TO_MARKET = {"TH店铺": "th", "PH店铺": "ph", "VN店铺": "vn"}
+
+
+def _site_to_market(row) -> str:
+    """从上架表行解析市场:优先「店铺站点」,兼容直接填的市场代码/旧「目标市场」。"""
+    f = row.get("fields") or {}
+    site = str(f.get("店铺站点") or "").strip()
+    if site in _SITE_TO_MARKET:
+        return _SITE_TO_MARKET[site]
+    low = site.lower()
+    if low in ("th", "ph", "vn"):
+        return low
+    mkt = str(f.get("目标市场") or "").strip().lower()
+    return mkt if mkt in ("th", "ph", "vn") else "th"
+
+
 def _set_rows(rows, status, remark="", failure=""):
     """批量回写状态;写失败只记日志,不中断流水线(状态看板尽力而为)。"""
     records = []
@@ -87,59 +111,52 @@ def _set_rows(rows, status, remark="", failure=""):
 
 
 # ---------------------------------------------------------------- 入库/补文案
-def _ensure_products(mkt: str, rows):
-    """确保每件商品在平台库有真实 Product 行。
+def _ensure_products(rows):
+    """按 SPU(优先)/商品ID 从平台库解析 Product —— 只引用,不补建。
 
-    已存在(按 source_goods_id 匹配)直接复用;手动新增的行按表里字段补建
-    Product + 默认 SKU(成本、标题、分类、主图全来自运营填的真实数据)。
-    返回 {goods_id: Product}。成本缺失/非法 → 抛 FlowError(无法定价,不硬上)。
+    上架表行必须指向采集库真实存在的商品(采集链路自动写入选品表并入库)。
+    查不到的行 → 单独标「上架失败」(SPU/商品ID 不在采集库),并从本批剔除,
+    不拖垮同批其他行;绝不从行字段编造补建商品。
+    顺带把 SPU 解析到的 标题(中文)/分类/成本 回填到行(空才填),店铺视角好看。
+    返回 (found: {goods_id: Product}, valid_rows: 可继续处理的行)。
     """
-    from ..models import Product, ProductSku
-    gids = [g for g in (_row_goods_id(r) for r in rows) if g]
-    if not gids:
-        raise FlowError("选中的行没有「商品ID」字段")
+    from ..models import Product
     db = SessionLocal()
     try:
-        found = {p.source_goods_id: p for p in
-                 db.query(Product).filter(Product.source_goods_id.in_(gids))}
+        found: dict[str, Product] = {}
+        valid: list = []
         for r in rows:
+            spu = _row_spu(r)
             gid = _row_goods_id(r)
-            if not gid or gid in found:
+            p = None
+            if spu:
+                p = db.query(Product).filter(Product.spu == spu).first()
+            if p is None and gid:
+                p = db.query(Product).filter(
+                    Product.source_goods_id == gid).first()
+            if p is None:
+                _set_rows([r], ST_FAIL,
+                          failure=f"SPU/商品ID 不在采集库(spu={spu or '-'} "
+                                  f"gid={gid or '-'}),请先采集入库")
+                print(f"[bitable] 行不在采集库,标失败: {spu or gid}", flush=True)
                 continue
+            found.setdefault(p.source_goods_id or f"B{p.id}", p)
+            # 回填展示字段(空才填,不覆盖运营手动内容)
             f = r.get("fields") or {}
-            try:
-                cost = float(f.get("成本价(CNY)") or 0)
-            except (TypeError, ValueError):
-                cost = 0.0
-            if cost <= 0:
-                raise FlowError(f"{gid} 成本价(CNY) 未填或非法,无法定价,不硬上")
-            title = str(f.get("标题(中文)") or f.get("标题") or "").strip()
-            if not title:
-                raise FlowError(f"{gid} 缺「标题(中文)」,无法生成文案")
-            cat = str(f.get("分类") or "").strip()
-            img = str(f.get("主图") or "").strip()
-            p = Product(
-                source_platform="bitable",
-                source_goods_id=gid,
-                market_code=str(f.get("目标市场") or mkt).upper(),
-                product_line="accessories",
-                title_cn=title,
-                category=cat,
-                main_image_url=img,
-                cost_cny_used=cost,
-                cost_source="bitable",
-                dedup_key=f"bitable:{gid}",
-                status="ingested",
-            )
-            db.add(p)
-            db.flush()
-            db.add(ProductSku(product_id=p.id, color="Default", style="",
-                              size="One Size", supplier_sku_id=f"SKU-{gid}",
-                              cost_cny=cost, stock=500))
-            db.commit()
-            found[gid] = p
-            print(f"[bitable] 补建商品 {gid} {title[:24]}", flush=True)
-        return found
+            patch = {}
+            if not f.get("标题(中文)"):
+                patch["标题(中文)"] = (p.title_cn or "")[:200]
+            if not f.get("分类"):
+                patch["分类"] = p.category or ""
+            if f.get("成本价(CNY)") in (None, ""):
+                patch["成本价(CNY)"] = float(p.cost_cny_used or 0)
+            if patch:
+                try:
+                    bitable.update_record(r["record_id"], patch)
+                except Exception as exc:
+                    print(f"[bitable] 回填行字段失败: {exc}", flush=True)
+            valid.append(r)
+        return found, valid
     finally:
         db.close()
 
@@ -166,7 +183,7 @@ def _ensure_copy(products, mkt: str):
         account = db.query(Account).first()
         acc_id = account.id if account else None
         need: list[tuple] = []
-        for p in products:
+        for p in products.values():  # products 是 {goods_id: Product}
             lst = (db.query(Listing)
                    .filter(Listing.product_id == p.id,
                            Listing.market_code == mkt.upper()).first())
@@ -274,13 +291,11 @@ def _run_review(mkt: str, tables):
 
 # ---------------------------------------------------------------- 主流程
 def run_picked(rows):
-    """轮询捡到的行(已翻成处理中)。按市场分组,每组跑一次真实流水线。
+    """轮询捡到的上架表行(已翻成处理中)。按店铺站点分组,每组跑一次真实流水线。
     任一组失败只标失败,不影响其他组。"""
     groups: dict[str, list] = {}
     for r in rows:
-        mkt = str((r.get("fields") or {}).get("目标市场") or "TH").strip().lower()
-        if mkt not in ("th", "ph", "vn"):
-            mkt = "th"
+        mkt = _site_to_market(r)
         groups.setdefault(mkt, []).append(r)
     for mkt, group in groups.items():
         try:
@@ -295,12 +310,15 @@ def run_picked(rows):
 
 def _process_group(mkt: str, rows):
     run_id = uuid.uuid4().hex[:8]
+
+    # 1) 解析商品(必须已在采集库;查不到的行已各自标失败并剔除)
+    products, rows = _ensure_products(rows)
+    if not rows:
+        return  # 全部不在采集库,已标失败,不再跑流水线
     gids = [g for g in (_row_goods_id(r) for r in rows) if g]
     if not gids:
         raise FlowError("选中的行没有「商品ID」字段,无法出表")
 
-    # 1) 商品入库(手动新增的行补建真实 Product;已有的直接复用)
-    products = _ensure_products(mkt, rows)
     # 2) 补真实文案(缺的 claude 桥生成;失败 → 标失败,不造假)
     _set_rows(rows, ST_COPY)
     _ensure_copy(products, mkt)
@@ -346,8 +364,9 @@ def _monitor(run_id: str, rows):
 def _write_result(rows, result):
     """上架完成后回写:真实 ok/fail,不粉饰。
 
-    卖家后台只给批次级成功/失败件数,无法逐件定位失败款 → 成功行写「已上架」,
-    有失败时在「备注」如实写批次总数(详情见群结果卡),不编造逐件状态。
+    卖家后台只给批次级成功/失败件数,无法逐件定位失败款 → 成功行写「已上架」
+    并写 上架时间(完成时刻),有失败时在「备注」如实写批次总数(详情见群结果卡),
+    不编造逐件状态。上架链接只在结果里真有时才写,没有就不写。
     """
     result = result or {}
     if result.get("ok") is False:
@@ -357,8 +376,30 @@ def _write_result(rows, result):
     sr = sr if isinstance(sr, dict) else {}
     ok = int(sr.get("ok") or 0)
     fail = int(sr.get("fail") or 0)
+    now_ms = int(time.time() * 1000)
+    url = str(sr.get("url") or "").strip()
     if fail > 0:
-        _set_rows(rows, ST_DONE if ok else ST_FAIL,
-                  remark=f"批次成功{ok}件/失败{fail}件,详情见群结果卡")
+        records = [{"record_id": r["record_id"],
+                    "fields": {"状态": ST_DONE if ok else ST_FAIL,
+                               "上架时间": now_ms,
+                               "备注": f"批次成功{ok}件/失败{fail}件,详情见群结果卡"}}
+                   for r in rows]
+        if url:
+            for rec in records:
+                rec["fields"]["上架链接"] = url
+        try:
+            bitable.batch_update(records)
+        except Exception as exc:
+            print(f"[bitable] 状态回写失败({ST_DONE if ok else ST_FAIL}): {exc}",
+                  flush=True)
         return
-    _set_rows(rows, ST_DONE)
+    records = [{"record_id": r["record_id"],
+                "fields": {"状态": ST_DONE, "上架时间": now_ms}}
+               for r in rows]
+    if url:
+        for rec in records:
+            rec["fields"]["上架链接"] = url
+    try:
+        bitable.batch_update(records)
+    except Exception as exc:
+        print(f"[bitable] 状态回写失败({ST_DONE}): {exc}", flush=True)
