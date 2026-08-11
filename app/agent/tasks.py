@@ -121,8 +121,9 @@ _STAGE_TEMPLATES = {
             "第一条确保 TikTok 卖家浏览器(端口 9344)已启动,已在跑就秒退,正常。"
             "第二条在卖家后台 CDP 真实上传,需登录态,属正常,你的权限已全部放行。"
             "把真实 stdout 原样放进返回 JSON 的 detail;ok/fail 按 run 目录下 "
-            "seller_upload_state.json 的 imported_products/ready_products 填"
-            "(没有逐件数就如实填 0 并在 summary 说明),单件失败如实计入,不粉饰。"
+            "seller_upload_state.json 的 imported_products(成功) / error_products(失败) 填"
+            "(error_products 存在就用它做 fail;没有逐件数就如实填 0 并在 summary 说明),"
+            "单件失败如实计入,不粉饰。"
             "只输出 JSON: {\"stage\":\"upload\",\"mode\":\"real\","
             "\"ok\":0,\"fail\":0,\"summary\":\"一句话\"}"
         ),
