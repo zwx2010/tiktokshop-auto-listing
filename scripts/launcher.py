@@ -16,6 +16,7 @@
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,8 +27,15 @@ from urllib.request import urlopen
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_FILE = BASE_DIR / "data" / "launcher.log"
+TUNNEL_STATE = BASE_DIR / "data" / "tunnel_url.txt"
 DEFAULT_PORT = 8000
 CPOLAR_ALT = Path(r"D:\develop\cpolar\cpolar")
+
+# cpolar 免费版每次启动 URL 会随机变化。启动时用 -log stdout 把公网 URL
+# 打到 stdout 解析出来；和上次记录的 URL 对比，变了就提示更新飞书后台回调。
+_TUNNEL_URL_RE = re.compile(
+    r"(https?://[a-zA-Z0-9._-]+\.cpolar(?:\.[a-z]{2,})?)"
+)
 
 _PKG_CANDIDATES = [
     BASE_DIR.parent / "RoseSeek_TikTokShop_AI_Localized_20260809",
@@ -119,6 +127,36 @@ def find_cpolar() -> str | None:
     return None
 
 
+def _read_last_tunnel_url() -> str:
+    try:
+        return TUNNEL_STATE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _write_tunnel_url(url: str) -> None:
+    try:
+        TUNNEL_STATE.parent.mkdir(parents=True, exist_ok=True)
+        TUNNEL_STATE.write_text(url, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _print_callback_hint(url: str, changed: bool) -> None:
+    """公网 URL 定了之后,打印飞书后台配置提示(免费版每次 URL 随机)。"""
+    print("=" * 62)
+    print(f"  公网地址: {url}")
+    if changed:
+        print("  !! cpolar 免费版 URL 每次启动会变,本次与上次不同 !!")
+        print("  → 需要去飞书开放平台更新这两个回调地址:")
+    else:
+        print("  URL 与上次相同,飞书后台无需改动。")
+    print(f"    事件订阅回调 : {url}/api/feishu/webhook")
+    print(f"    交互卡片回调 : {url}/api/feishu/card")
+    print("  若回调地址没配过,先到飞书后台『事件订阅』把地址配上,并发布新版本。")
+    print("=" * 62)
+
+
 def start_tunnel(port: int) -> int:
     cpolar = find_cpolar()
     if not cpolar:
@@ -127,11 +165,12 @@ def start_tunnel(port: int) -> int:
     if not _http_ok(port):
         log("注意：服务器未就绪，隧道会建立但回调 502。先启动服务器（选项 1）。")
     log("启动 cpolar http 隧道（公网 → 本机飞书回调）...")
-    proc = subprocess.Popen([cpolar, "http", str(port)],
+    proc = subprocess.Popen([cpolar, "http", str(port), "-log", "stdout"],
                             cwd=str(BASE_DIR), stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                             errors="replace")
-    # 顺打印一行 cpolar 日志里翻出的公网 URL
+    last_url = _read_last_tunnel_url()
+    found_url = ""
     print("  cpolar 日志（按 Ctrl+C 停止隧道）：")
     try:
         for line in proc.stdout:
@@ -139,8 +178,16 @@ def start_tunnel(port: int) -> int:
             if not line:
                 continue
             print("   " + line)
-            if "https://" in line or "http://" in line:
-                log("公网地址(回调填这个): " + line)
+            m = _TUNNEL_URL_RE.search(line)
+            if m:
+                # cpolar 隧道同时提供 http/https 指向同一主机;统一用 https,
+                # 避免先到 http 后到 https 造成提示与落盘不一致
+                url = m.group(1).replace("http://", "https://", 1)
+                if url != found_url:
+                    found_url = url
+                    _write_tunnel_url(url)
+                    log(f"公网地址(回调填这个): {url}")
+                    _print_callback_hint(url, changed=(url != last_url))
     except KeyboardInterrupt:
         proc.kill()
         log("隧道已停止。")
