@@ -11,8 +11,9 @@
     python scripts/launcher.py --check    # 健康检查
     python scripts/launcher.py --port 8000
 
-启动服务器流程：先探活 8000，已在跑则直接开浏览器；否则拉起 uvicorn 子进程，
-轮询 /dashboard/ 到 200 后自动打开浏览器。日志写 data/launcher.log。
+启动服务器流程：先探活 8000，已在跑则复用；否则拉起 uvicorn 子进程，轮询
+/dashboard/ 到 200 即就绪。可视化已在飞书多维表格进行，不再自动开浏览器
+（看板仍可手动访问 http://127.0.0.1:8000/dashboard/）。日志写 data/launcher.log。
 """
 import argparse
 import os
@@ -21,7 +22,6 @@ import shutil
 import subprocess
 import sys
 import time
-import webbrowser
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -96,9 +96,9 @@ def _check_port_free(port: int) -> bool:
 
 
 def start_server(port: int) -> int:
+    """启动 uvicorn 服务器。可视化在飞书多维表格,不再自动开浏览器。"""
     if _http_ok(port):
-        log(f"端口 {port} 服务已在运行 → 直接打开浏览器")
-        webbrowser.open(f"http://127.0.0.1:{port}/dashboard/")
+        log(f"端口 {port} 服务已在运行")
         return 0
     cmd = [sys.executable, "-m", "uvicorn", "app.main:app",
            "--host", "127.0.0.1", "--port", str(port)]
@@ -107,8 +107,8 @@ def start_server(port: int) -> int:
     deadline = time.time() + 30
     while time.time() < deadline:
         if _http_ok(port):
-            log(f"服务已就绪 http://127.0.0.1:{port}/dashboard/  → 打开浏览器")
-            webbrowser.open(f"http://127.0.0.1:{port}/dashboard/")
+            log(f"服务已就绪 http://127.0.0.1:{port}/dashboard/  "
+                f"(可视化在飞书,看板可手动访问,不再自动开浏览器)")
             return 0
         if proc.poll() is not None:
             log(f"[失败] uvicorn 进程退出，退出码 {proc.returncode}。见上方日志。")
@@ -238,7 +238,7 @@ def menu() -> None:
         print("=" * 46)
         print("  TikTokShop 多账号自动化运营平台  — 一键启动")
         print("=" * 46)
-        print("  1) 启动服务器（自动开浏览器）")
+        print("  1) 启动服务器（可视化在飞书,不开浏览器）")
         print("  2) 启动飞书隧道 (cpolar http 8000)")
         print("  3) 一键全部（服务器 + 隧道）")
         print("  4) 安装依赖")
