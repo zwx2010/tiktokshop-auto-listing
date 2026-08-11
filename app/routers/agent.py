@@ -1,4 +1,4 @@
-"""POST /api/agent/run —— 浏览器/飞书触发单个环节(失败隔离,可逐环节演示)。
+"""POST /api/agent/run —— 浏览器/飞书触发单个环节(失败隔离,可逐环节运行)。
 
 同步执行(sync def → FastAPI 线程池),claude -p 阻塞但 uvicorn 不卡。
 stage 见 app.agent.tasks.STAGES(ping/collect/table/review/approval/upload/rag_check/rag_copy)。
@@ -23,5 +23,5 @@ def run(payload: AgentRun):
 
 @router.get("/agent/approvals")
 def approvals():
-    """审批状态列表(演示看板用)。"""
+    """审批状态列表。"""
     return {"runs": approval.list_runs()}

@@ -1,4 +1,4 @@
-"""把真实拼多多采集数据灌入平台数据库（Demo 用）。
+"""把真实拼多多采集数据灌入平台数据库。
 
 数据来源：D:\\ccproject\\codeproject\\tk自动化工作流\\runs\\smoke_01\\
   captures/pdd_capture_*.json           —— 真实采集 JSON

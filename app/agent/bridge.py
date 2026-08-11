@@ -1,7 +1,7 @@
 """Bridge —— 把任务翻译成 `claude -p` 无头调用,解析封套 JSON 结果。
 
 为什么用 subprocess 调 claude CLI 而不是 SDK:
-  面试演示场景,claude 即在 PATH(当前环境实测 2.1.226),无额外依赖;
+  claude 即在 PATH(当前环境实测 2.1.226),无额外依赖;
   skills 是全局的,claude -p 直接能加载;编排层只负责"翻译任务 + 收结果"。
 
 实测 `--output-format json` 返回单个封套对象:

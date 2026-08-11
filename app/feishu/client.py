@@ -26,7 +26,7 @@ def send_payload(webhook, payload, timeout=10):
         r = requests.post(webhook, json=payload, timeout=timeout)
         data = r.json() if r.content else {}
         return {"status": r.status_code, "body": data}
-    except Exception as exc:  # 演示环境网络不稳,不外抛
+    except Exception as exc:  # 网络不稳,不外抛
         return {"status": 0, "body": {"error": str(exc)}}
 
 

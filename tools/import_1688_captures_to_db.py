@@ -10,7 +10,7 @@
     python tools/import_1688_captures_to_db.py --run-dir <runs/1688_xxx> --market th
     python tools/import_1688_captures_to_db.py --auto-latest --market ph   # 最新一个 1688 run
 
-设计（面试讲点）：
+设计：
 - 确定性脚本，不经 LLM —— DB 写入是源头事实，结果如实打印，由编排层（approval.py）解析；
 - 采集端标记 needs_review / 验证码 / 登录页 的件直接跳过，不入库；
 - 单件失败不影响其余（逐件 rollback），errors 逐条列出，不做粉饰。

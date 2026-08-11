@@ -1,4 +1,4 @@
-"""分阶段任务定义:每个 stage = 一个 `claude -p` 调用 → 失败隔离、可逐环节演示。
+"""分阶段任务定义:每个 stage = 一个 `claude -p` 调用 → 失败隔离、可逐环节运行。
 
 stage 是"给 agent 的指令模板",参数在 build_prompt 里用 `{params}` 占位替换
 (JSON 大括号不做 .format,避免转义地狱)。

@@ -2,7 +2,7 @@
 
 默认使用 SQLite，一行切换到 MySQL：
     export DATABASE_URL=mysql+pymysql://user:pass@localhost:3306/tiktok_platform
-SQLAlchemy 模型不变，仅连接串变化 —— 面试时可演示这个切换成本。
+SQLAlchemy 模型不变，仅连接串变化 —— 一行环境变量即可切换。
 """
 import json
 import os

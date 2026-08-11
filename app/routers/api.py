@@ -36,7 +36,7 @@ def _log_ingest_body(raw: bytes, note: str = ""):
 
 
 def _log_rejected(goods_id: str, reason: str):
-    """被拒商品落盘（面试讲点：采集有失败监控，不是黑盒）。
+    """被拒商品落盘（采集有失败监控，不是黑盒）。
 
     每一行 = 一条拒收：时间 | 商品ID | 原因。跑完直接打开
     data/ingest_rejected.log 就能看到拒了几个、每个什么原因。
@@ -47,7 +47,7 @@ def _log_rejected(goods_id: str, reason: str):
 
 
 def _tol_loads(raw: bytes):
-    """影刀 body 的容错解析（面试讲点：不挑上游格式）。
+    """影刀 body 的容错解析（不挑上游格式）。
 
     实测影刀会：
       1. 把捕获拼成 {"capture": {…}} 但丢掉外层右括号和 market/account_name 后缀；
@@ -166,7 +166,7 @@ def tasks(db: Session = Depends(get_db), limit: int = 50):
 async def ingest(request: Request, db: Session = Depends(get_db)):
     """影刀 RPA 调这里：POST 一个采集 JSON（capture 结构），返回商品与上架记录。
 
-    容错设计（面试讲点）：影刀可能把整个请求体再包一层 JSON 字符串
+    容错设计：影刀可能把整个请求体再包一层 JSON 字符串
     （"{\\"capture\\":...}"），这里统一解掉一层再入库 —— 不挑上游格式。
     """
     raw = await request.body()

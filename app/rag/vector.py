@@ -2,7 +2,7 @@
 
 设计决策:
 - 语料小(数十~几百条),索引放 SQLite(`data/rag_corpus.db`),查询在内存算 ——
-  零服务、可离线,面试好讲;不引 sqlite-vec 原生扩展(演示机兼容性风险)。
+  零服务、可离线;不引 sqlite-vec 原生扩展(兼容性风险)。
 - Embedding 双后端:
   1. API:千问 DashScope text-embedding(真语义向量),config/embedding.local.json 可配;
   2. 本地确定性 feature-hash(crc32 分词),无网/无 key 时兜底,同一文本必得同一向量。
