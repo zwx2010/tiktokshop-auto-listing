@@ -1,6 +1,6 @@
 """agent 调混合 RAG 的 CLI 工具。
 
-用法(平台根目录,即 TikTokShop_Platform 下):
+用法(项目根目录下):
   python -m app.rag.cli check --title "古驰同款项链" --cost 8 --market ph
   python -m app.rag.cli copy  --market th --category earrings --title "珍珠耳环 复古"
   python -m app.rag.cli check-table "workflow/runs/xx/ph/PH_upload_top10.xlsx"

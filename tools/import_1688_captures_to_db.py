@@ -29,10 +29,10 @@ from app.database import SessionLocal  # noqa: E402
 from app.models import Account, Product  # noqa: E402
 from app.pipeline import ingest_capture  # noqa: E402
 
-# 与 app/agent/tasks.py 同源：ROSEEK_PKG_DIR 可覆盖，缺省用当前机器路径
+# 与 app/agent/tasks.py 同源：ROSEEK_PKG_DIR 可覆盖，缺省用项目根的相对路径
 _PKG = os.environ.get(
     "ROSEEK_PKG_DIR",
-    "D:/ccproject/codeproject/RoseSeek_TikTokShop_AI_Localized_20260809",
+    str(Path(__file__).resolve().parent.parent.parent / "RoseSeek_TikTokShop_AI_Localized_20260809"),
 )
 
 

@@ -25,7 +25,7 @@ def workflow_dir():
         return Path(env)
     candidates = [
         BASE_DIR.parent / "tk自动化工作流",
-        Path(r"D:\ccproject\codeproject\RoseSeek_TikTokShop_AI_Localized_20260809"),
+        BASE_DIR.parent / "RoseSeek_TikTokShop_AI_Localized_20260809",
     ]
     for c in candidates:
         if (c / "config").is_dir():

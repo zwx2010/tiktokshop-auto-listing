@@ -14,17 +14,14 @@ from . import bridge
 
 # 关键坑:deepseek-v4-flash 的提示词里,命令一旦"另起一行带缩进"就会被误读为
 # "命令没带上来"。必须把命令紧跟冒号写在同一行、正斜杠路径、`-File` 免内嵌引号。
-# 路径参数化(移植到另一台机器):环境变量覆盖即可,缺省用当前机器路径。
+# 路径参数化(移植到另一台机器):环境变量覆盖即可,缺省用项目根的相对路径。
 #   set ROSEEK_PKG_DIR=D:\...\RoseSeek_TikTokShop_AI_Localized_20260809
-#   set PLATFORM_DIR=D:\...\TikTokShop_Platform
+#   set PLATFORM_DIR=D:\...\TikTokShop_Platform_Lite
 _ROSEEK_PKG = os.environ.get(
     "ROSEEK_PKG_DIR",
-    "D:/ccproject/codeproject/RoseSeek_TikTokShop_AI_Localized_20260809",
+    str(BASE_DIR.parent / "RoseSeek_TikTokShop_AI_Localized_20260809"),
 )
-_PLATFORM = os.environ.get(
-    "PLATFORM_DIR",
-    "D:/ccproject/codeproject/TikTokShop_Platform",
-)
+_PLATFORM = os.environ.get("PLATFORM_DIR", str(BASE_DIR))
 
 _STAGE_TEMPLATES = {
     "ping": {

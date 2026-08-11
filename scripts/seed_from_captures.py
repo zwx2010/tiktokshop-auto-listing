@@ -1,6 +1,6 @@
 """把真实拼多多采集数据灌入平台数据库。
 
-数据来源：D:\\ccproject\\codeproject\\tk自动化工作流\\runs\\smoke_01\\
+数据来源：../tk自动化工作流/runs/smoke_01/（项目同级的真实采集 run）
   captures/pdd_capture_*.json           —— 真实采集 JSON
   {th,ph,vn}/codex_listing_copy.csv     —— 已生成的三语言真实文案
 
@@ -24,7 +24,7 @@ from app.database import SessionLocal, init_db  # noqa: E402
 from app.models import Account, Product  # noqa: E402
 from app.pipeline import ingest_capture  # noqa: E402
 
-WORKFLOW_RUNS = Path(r"D:\ccproject\codeproject\tk自动化工作流\runs\smoke_01")
+WORKFLOW_RUNS = PROJECT_ROOT.parent / "tk自动化工作流" / "runs" / "smoke_01"
 CAPTURES_DIR = WORKFLOW_RUNS / "captures"
 MARKETS = ["TH", "PH", "VN"]
 
