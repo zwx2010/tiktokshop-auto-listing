@@ -81,6 +81,28 @@ def _needs_copy(lst) -> bool:
     return _is_mock(lst)
 
 
+def _validate_copy(title: str, desc: str):
+    """RAG 规则校验生成的文案：违禁词（大小写不敏感）+ 标题长度上限。
+
+    返回 (ok, reason)。不通过 → 调用方必须标 copy_missing，绝不带违规文案上架。
+    """
+    from app.rag import rules
+    t = (title or "").strip()
+    d = (desc or "").strip()
+    for label, text in (("标题", t), ("描述", d)):
+        b = rules.check_banned(text)
+        if not b.get("passed"):
+            hits = [h["term"] for h in b.get("hits", [])]
+            return False, f"{label}命中违禁词: {'、'.join(hits[:5])}"
+    max_len = None
+    for r in rules.upload_spec_rules():
+        if r.get("kind") == "max_length" and r.get("column") == "product_name":
+            max_len = int(r.get("max_len"))
+    if max_len and len(t) > max_len:
+        return False, f"标题超长 {len(t)}>{max_len}"
+    return True, ""
+
+
 def _rag_rules_summary() -> str:
     """把规则层要点压成提示词片段（违禁/品类白名单/上传规格）。"""
     from app.rag import rules
@@ -224,7 +246,7 @@ def main() -> int:
 
     # 逐商品重生成
     db = SessionLocal()
-    done = {"codex": 0, "llm": 0, "missing": 0, "error": 0}
+    done = {"codex": 0, "llm": 0, "missing": 0, "rule_fail": 0, "error": 0}
     processed = 0
     try:
         batch: list[dict] = []
@@ -234,7 +256,8 @@ def main() -> int:
             if not batch:
                 return
             prompt = _llm_batch_prompt(batch, DEFAULT_STORE, rules_text)
-            sr = _run_claude(prompt)
+            # 批越大输出越长，超时按商品数缩放
+            sr = _run_claude(prompt, timeout_s=max(240, 180 * len(batch)))
             items = (sr or {}).get("items") if isinstance(sr, dict) else None
             if not isinstance(items, list):
                 print(f"  [LLM批失败] 本批 {len(batch)} 商品未返回合法 JSON —— 全标 copy_missing", flush=True)
@@ -257,16 +280,22 @@ def main() -> int:
                     title = (row.get("title") or "").strip()
                     desc = (row.get("description") or "").strip()
                     try:
-                        if title and desc:
+                        ok, reason = _validate_copy(title, desc)
+                        if title and desc and ok:
                             lst.title = title
                             lst.description = desc
                             lst.listing_status = "ready"
                             done["llm"] += 1
                         else:
+                            # 空文案 或 未过 RAG 规则校验 → 标 copy_missing，绝不上架
                             lst.title = ""
                             lst.description = ""
                             lst.listing_status = "copy_missing"
-                            done["missing"] += 1
+                            if ok:
+                                done["missing"] += 1
+                            else:
+                                done["rule_fail"] += 1
+                                print(f"  [规则拦截] {e['goods_id']}/{mkt}: {reason}", flush=True)
                         db.commit()
                     except Exception as exc:
                         db.rollback()
@@ -338,12 +367,27 @@ def main() -> int:
                             done["error"] += 1
                             print(f"  [写库失败-missing] {gid}: {exc}", flush=True)
         flush_batch()
+
+        # 终检：对所有 ready 文案再跑一遍规则校验（含历史写入的），违规清成 copy_missing
+        sweep = 0
+        for lst in db.query(Listing).filter(Listing.listing_status == "ready").all():
+            ok, reason = _validate_copy(lst.title, lst.description)
+            if not ok:
+                lst.title = ""
+                lst.description = ""
+                lst.listing_status = "copy_missing"
+                db.commit()
+                sweep += 1
+                print(f"  [终检拦截] listing#{lst.id}: {reason}", flush=True)
+        if sweep:
+            print(f"  终检共拦截 {sweep} 条违规文案", flush=True)
     finally:
         db.close()
 
     print(json.dumps({"ok": True, **done, "mode": args.mode,
                       "summary": f"codex {done['codex']} / claude {done['llm']} / "
-                                 f"copy_missing {done['missing']} / 失败 {done['error']}"},
+                                 f"copy_missing {done['missing']} / 规则拦截 {done['rule_fail']} / "
+                                 f"失败 {done['error']}"},
                      ensure_ascii=False))
     return 0
 
