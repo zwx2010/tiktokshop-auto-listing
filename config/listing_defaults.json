@@ -6,5 +6,6 @@
   "capture_cost_bounds": {
     "min": 1.0,
     "max": 40.0
-  }
+  },
+  "gallery_image_min_dim": 300
 }

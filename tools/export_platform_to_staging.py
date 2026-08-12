@@ -21,10 +21,14 @@ staging CSV（字段格式逐列对齐 Convert-PddCaptureToStaging.ps1 产物）
 """
 import argparse
 import csv
+import hashlib
+import json
 import os
 import re
 import subprocess
 import sys
+import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -81,6 +85,9 @@ DEFAULT_STOCK = int(_DEF.get("default_stock", 500))
 PACKAGE_DIMS = tuple(_DEF.get("package_dims", [28, 22, 4]))
 MATERIAL = str(_DEF.get("material", "Polyester blend"))
 FASHION_ROOT = "Fashion Accessories"
+# 出表时过滤掉的商品图最小边长(px)。对应工作流 FINAL_UPLOAD_TEMPLATE_RULES.md 的
+# 「低于 300×300 上传报错」阈值;过滤后有效大图才能填满更多格(最多 9 格)。
+GALLERY_MIN_DIM = int(_DEF.get("gallery_image_min_dim", 300))
 
 
 def load_products(db) -> list[Product]:
@@ -226,6 +233,124 @@ def resolve_copy(
     return "", "", "", "platform:missing", None
 
 
+# 图片尺寸过滤用:qwen_vision.py --meta(本机解析宽高,0 成本)定位方式与
+# import_1688_captures_to_db.py 同源 —— ROSEEK_PKG_DIR 可覆盖,缺省用项目根相对路径。
+_PKG = os.environ.get(
+    "ROSEEK_PKG_DIR",
+    str(Path(__file__).resolve().parent.parent.parent / "RoseSeek_TikTokShop_AI_Localized_20260809"),
+)
+QWEN_TOOL = os.path.join(_PKG, "tools", "qwen_vision.py")
+# 尺寸缓存(去重下载 + 判定落盘),data/ 已整体 gitignore,不入库
+_IMG_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "img_dim_cache"
+_DIMS_JSON = Path(__file__).resolve().parent.parent / "data" / "img_dims.json"
+_DIMS_CACHE: dict[str, list] | None = None      # url -> [w, h] 或 [0](判不出/失败)
+_DIMS_MEMO: dict[str, list] = {}                 # 单次运行内记忆,避免重复下载/解析
+
+
+def _load_dims_cache():
+    global _DIMS_CACHE
+    if _DIMS_CACHE is None:
+        _DIMS_CACHE = {}
+        try:
+            if _DIMS_JSON.is_file():
+                _DIMS_CACHE.update(json.loads(_DIMS_JSON.read_text(encoding="utf-8")))
+        except Exception:
+            _DIMS_CACHE = {}
+    return _DIMS_CACHE
+
+
+def _save_dims_cache():
+    try:
+        _DIMS_JSON.parent.mkdir(parents=True, exist_ok=True)
+        _DIMS_JSON.write_text(json.dumps(_DIMS_CACHE, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _download(url: str, outpath: Path) -> bool:
+    for _ in range(2):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+            if len(data) < 50:
+                raise ValueError("body too small")
+            outpath.parent.mkdir(parents=True, exist_ok=True)
+            outpath.write_bytes(data)
+            return True
+        except Exception:
+            if _ >= 1:
+                return False
+            time.sleep(1.5)
+    return False
+
+
+def _parse_dims(url: str):
+    """返回 [w, h] 或 None。下载失败/无法解析 → None(该图判不过,过滤掉)。"""
+    if url in _DIMS_MEMO:
+        dims = _DIMS_MEMO[url]
+        return (dims[0], dims[1]) if dims and dims[0] else None
+    dims = _load_dims_cache().get(url)
+    if dims is not None:
+        _DIMS_MEMO[url] = dims
+        return (dims[0], dims[1]) if dims[0] else None
+    ext = os.path.splitext(url.split("?")[0])[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+        ext = ".img"
+    local = _IMG_CACHE_DIR / (hashlib.md5(url.encode("utf-8")).hexdigest() + ext)
+    if not local.is_file() and not _download(url, local):
+        _DIMS_MEMO[url] = [0]
+        return None
+    try:
+        r = subprocess.run([sys.executable, QWEN_TOOL, str(local), "--meta"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           timeout=60)
+        w = h = 0
+        for line in (r.stdout or "").splitlines():
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if os.path.abspath(str(d.get("path") or "")) == os.path.abspath(str(local)):
+                w, h = d.get("width") or 0, d.get("height") or 0
+                break
+        if not w or not h:
+            raise ValueError("无法解析宽高")
+    except Exception:
+        w = h = 0
+    if not w or not h:
+        _DIMS_MEMO[url] = [0]
+        _load_dims_cache()[url] = [0]
+        _save_dims_cache()
+        return None
+    _DIMS_MEMO[url] = [w, h]
+    _load_dims_cache()[url] = [w, h]
+    _save_dims_cache()
+    return w, h
+
+
+def filter_small_images(urls, min_dim: int) -> list[str]:
+    """过滤小尺寸/判不过的图片,只留边长 ≥ min_dim 的大图,保持原序去重。
+
+    下载或解析失败的 URL 也算不过(上传前审图同样会 FAIL),一并滤掉。
+    全部被滤空时兜底保留第一张(商品必须有主图,宁留小图也不让主图空缺;
+    审图闸门仍会按 TikTok 下限单独判它)。不造假 —— 保留的都是真实存在的图。
+    """
+    seen: list[str] = []
+    for raw in (urls or []):
+        url = str(raw).strip()
+        if not url or url in seen:
+            continue
+        dims = _parse_dims(url)
+        if dims and dims[0] >= min_dim and dims[1] >= min_dim:
+            seen.append(url)
+    if not seen and urls:
+        seen.append(str(urls[0]).strip())
+    return seen[:9]
+
+
 def make_row(
     p: Product,
     sku: ProductSku,
@@ -242,7 +367,7 @@ def make_row(
     # style 透传不截断；超 MAX_STYLE_LEN 的 SKU 由调用方在 append 前整件跳过（见 main）
     style_en = resolve_style_en(sku, style_map)
     category = p.category or cleaning.infer_category(p.title_cn)
-    images = cleaning.clean_images(p.image_urls)
+    images = filter_small_images(cleaning.clean_images(p.image_urls), GALLERY_MIN_DIM)
     low = min(sku_costs) if sku_costs else 0.0
     high = max(sku_costs) if sku_costs else 0.0
 
@@ -311,17 +436,20 @@ def write_staging(rows: list[dict], path: Path) -> None:
 
 
 def run_fill(fill_ps1: Path, template_path: Path, csv_path: Path, out_path: Path,
-             english: bool = False) -> None:
+             english: bool = False, max_images: int = 5) -> None:
     # 强制 powershell 以 UTF-8 输出,并让 subprocess 用 UTF-8 容错解码。
     # 否则在部分环境(如 claude -p 子进程)下 text=True 走 GBK 解码,
     # 遇到非法字节 reader 线程直接崩,result.stdout 变 None。
+    # max_images:商品图填几张(E..M)。导出路径图已做尺寸/有效过滤,可填满 9 格;
+    # ps1 缺省 5 张(其他管线的小图安全线),这里显式传 9。
     lang_switch = " -English" if english else ""
+    img_switch = f" -MaxImages {int(max_images)}"
     cmd = [
         "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-Command",
         "$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
-        "& '{0}' -TemplatePath '{1}' -StagingCsvPath '{2}' -OutputPath '{3}'{4}".format(
-            fill_ps1, template_path, csv_path, out_path, lang_switch
+        "& '{0}' -TemplatePath '{1}' -StagingCsvPath '{2}' -OutputPath '{3}'{4}{5}".format(
+            fill_ps1, template_path, csv_path, out_path, lang_switch, img_switch
         ),
     ]
     print("调用 PowerShell 填表...")
@@ -455,7 +583,8 @@ def main() -> None:
 
     if not args.skip_fill:
         out_path = run_dir / f"{mkt}_upload_top{row_products}.xlsx"
-        run_fill(fill_ps1, template_path, csv_path, out_path, english=english)
+        run_fill(fill_ps1, template_path, csv_path, out_path, english=english,
+                 max_images=9)
         print(f"[完成] 上架表格: {out_path}")
         print(f"   含 {row_products} 件商品 / {len(rows)} 行 SKU")
 
