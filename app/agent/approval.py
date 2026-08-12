@@ -757,12 +757,23 @@ def build_bridge_card(run_id, stages):
     imported = int(br.get("imported") or 0)
     already = int(br.get("already") or 0)
     skipped = int(br.get("skipped") or 0)
+    cost_filtered = int(br.get("cost_filtered") or 0)
     errs = br.get("errors") or []
     fields = [("采集件数", str(captured)),
               ("入库件数", str(imported)),
               ("已存在", str(already)),
               ("跳过", str(skipped)),
               ("run_id", run_id)]
+    if cost_filtered:
+        bounds = br.get("cost_bounds") or {}
+        lo, hi = float(bounds.get("min") or 0), float(bounds.get("max") or 0)
+        if lo > 0 and hi > 0:
+            label = f"成本过滤(不在 {lo:g}~{hi:g}元)"
+        elif hi > 0:
+            label = f"成本过滤(>{hi:g}元)"
+        else:
+            label = "成本过滤"
+        fields.insert(-1, (label, str(cost_filtered)))
     notes = []
     for name, label in (("collect", "采集"), ("bridge_to_db", "入库")):
         err = _stage_err(stages.get(name))

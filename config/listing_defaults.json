@@ -2,5 +2,9 @@
   "default_weight_g": 80,
   "default_stock": 500,
   "package_dims": [28, 22, 4],
-  "material": "Polyester blend"
+  "material": "Polyester blend",
+  "capture_cost_bounds": {
+    "min": 2.0,
+    "max": 40.0
+  }
 }

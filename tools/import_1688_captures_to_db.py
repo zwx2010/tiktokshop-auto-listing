@@ -9,10 +9,15 @@
 用法：
     python tools/import_1688_captures_to_db.py --run-dir <runs/1688_xxx> --market th
     python tools/import_1688_captures_to_db.py --auto-latest --market ph   # 最新一个 1688 run
+    python tools/import_1688_captures_to_db.py --min-cost 2 --max-cost 40  # 覆盖成本区间
 
 设计：
 - 确定性脚本，不经 LLM —— DB 写入是源头事实，结果如实打印，由编排层（approval.py）解析；
 - 采集端标记 needs_review / 验证码 / 登录页 的件直接跳过，不入库；
+- 成本区间过滤：成本价不在 [min, max] 区间的件不入库、不写选品表，单独计入 cost_filtered。
+  口径与选品表「成本价(CNY)」完全一致（app.cleaning.select_cost，SKU 矩阵最低价→兜底详情价）；
+  区间默认读 config/listing_defaults.json 的 capture_cost_bounds，--min-cost/--max-cost 可覆盖，
+  传 0 表示不设该侧边界（0 价/未知成本的件始终跳过，不掺假入库）；
 - 单件失败不影响其余（逐件 rollback），errors 逐条列出，不做粉饰。
 """
 import argparse
@@ -25,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app import cleaning  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.feishu import bitable  # noqa: E402
 from app.models import Account, Product  # noqa: E402
@@ -65,6 +71,36 @@ _PKG = os.environ.get(
 )
 
 
+def _cost_bounds(min_cost: float | None, max_cost: float | None) -> tuple[float, float]:
+    """成本区间 (lo, hi)。CLI 参数优先；缺省读 config/listing_defaults.json 的
+    capture_cost_bounds。0 或 None = 不设该侧边界（只挡下限/只挡上限/全放行）。
+    """
+    lo = hi = 0.0
+    try:
+        from app.config import CONFIG_DIR
+        cfg = json.loads((CONFIG_DIR / "listing_defaults.json").read_text(encoding="utf-8"))
+        bounds = cfg.get("capture_cost_bounds") or {}
+        lo = float(bounds.get("min") or 0)
+        hi = float(bounds.get("max") or 0)
+    except Exception:
+        pass  # 读不到配置就全放行,不因配置异常卡死采集
+    if min_cost is not None:
+        lo = float(min_cost or 0)
+    if max_cost is not None:
+        hi = float(max_cost or 0)
+    return lo, hi
+
+
+def _bounds_text(lo: float, hi: float) -> str:
+    if lo > 0 and hi > 0:
+        return f"{lo:g}~{hi:g}元"
+    if lo > 0:
+        return f">={lo:g}元"
+    if hi > 0:
+        return f"<={hi:g}元"
+    return "不限"
+
+
 def _resolve_run_dir(explicit: str) -> str:
     """解析 run 目录：显式路径(含 pkg 前缀)→ 不存在则找最新 1688 run。"""
     if explicit:
@@ -100,6 +136,10 @@ def main() -> int:
     ap.add_argument("--run-dir", default="", help="1688 run 目录；留空则用最新一个 run")
     ap.add_argument("--auto-latest", action="store_true", help="总是用最新 1688 run")
     ap.add_argument("--market", default="th", help="入库市场 th/ph/vn（默认 th）")
+    ap.add_argument("--min-cost", type=float, default=None,
+                    help="成本价下限(含)，默认读 config/listing_defaults.json 的 capture_cost_bounds；0=不设")
+    ap.add_argument("--max-cost", type=float, default=None,
+                    help="成本价上限(含)，默认读 config/listing_defaults.json 的 capture_cost_bounds；0=不设")
     args = ap.parse_args()
 
     run_dir = _resolve_run_dir(args.run_dir if not args.auto_latest else "")
@@ -121,7 +161,10 @@ def main() -> int:
         return 2
 
     market_upper = (args.market or "th").upper()
-    imported = already = skipped = 0
+    lo, hi = _cost_bounds(args.min_cost, args.max_cost)
+    print(f"[import] 成本区间 {_bounds_text(lo, hi)}", flush=True)
+    imported = already = skipped = cost_filtered = 0
+    cost_filtered_detail = []
     errors = []
     db = SessionLocal()
     try:
@@ -139,6 +182,14 @@ def main() -> int:
             if (cap.get("needs_review") or cap.get("is_security_verification")
                     or cap.get("is_login_page")):
                 skipped += 1
+                continue
+            # 成本区间过滤：不入库、不写选品表。口径 = select_cost(与选品表「成本价(CNY)」一致)，
+            # 0 价/未知成本也跳过 —— 成本是选品下限，缺失不猜不凑。
+            cost = cleaning.select_cost(cap)["cost_cny"]
+            if (lo > 0 and cost < lo) or (hi > 0 and cost > hi) or cost <= 0:
+                cost_filtered += 1
+                cost_filtered_detail.append(
+                    {"goods_id": goods_id, "cost_cny": round(float(cost), 2)})
                 continue
             platform = str(cap.get("source_platform") or "1688")
             key = f"{platform}:{goods_id}"
@@ -168,12 +219,17 @@ def main() -> int:
         parts.append(f"已存在 {already} 件(补建 {market_upper} 本地化 Listing)")
     if skipped:
         parts.append(f"跳过 {skipped}")
+    if cost_filtered:
+        parts.append(f"成本过滤 {cost_filtered} 件(区间 {_bounds_text(lo, hi)})")
     out = {
         "ok": True,
         "stage": "bridge_to_db",
         "imported": imported,
         "already": already,
         "skipped": skipped,
+        "cost_filtered": cost_filtered,
+        "cost_bounds": {"min": lo, "max": hi},
+        "cost_filtered_detail": cost_filtered_detail[:20],
         "errors": errors,
         "run_dir": run_dir,
         "summary": "，".join(parts) + ("；入库失败 " + str(len(errors)) + " 件" if errors else ""),
