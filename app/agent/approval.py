@@ -113,11 +113,18 @@ def _push_result_card(run_id, result):
             buttons=[]))
         return
     sr = result.get("stage_result") or {}
-    ok, fail = sr.get("ok") or 0, sr.get("fail") or 0
+    # 兼容 stage_result 为字符串的情况(claude bridge 有的 stage 返回纯文本而非
+    # 结构化 dict,此前直接 sr.get 抛 AttributeError 导致结果卡没推出来)。
+    if isinstance(sr, dict):
+        ok, fail = sr.get("ok") or 0, sr.get("fail") or 0
+        detail = str(sr.get("mode") or "?")
+    else:
+        ok, fail = 0, 0
+        detail = str(sr)[:120] if sr else "(上架完成,结果未结构化)"
     color = "green" if ok and fail == 0 else "red"
     fc.deliver_card(fc.approval_card(
         title=f"上架结果 #{run_id}", color=color,
-        fields=[("模式", str(sr.get("mode", "?"))), ("成功", str(ok)),
+        fields=[("模式", detail), ("成功", str(ok)),
                 ("失败", str(fail)), ("run_id", run_id)],
         buttons=[]))
 
@@ -210,13 +217,42 @@ def _detect_mode(text):
     if re.search(r"(只审|先审|不传|别传|只看不|先看看|不上架|别上架)", t):
         return "review_only"
     # 从采集库按品类选商品 → 生成上架表(表B)行,由轮询跑真实流水线。
-    # 命中形态: "从采集库选3件耳环上架到TH" / "耳环选3件上架到TH" / "选10件手链到PH"
-    if re.search(r"(从采集库|从库|从选品|选品库).*(选|上)|选.*件.*(上架|到(泰国|泰|越南|越|菲律宾|菲|th|ph|vn|TH|PH|VN))", t, re.I):
+    # 命中形态三类(都必须有品类,避免把"上架10件到TH"这类无品类指令误判):
+    #   1) "从采集库/从库/从选品/选品库 ... 选/上 ..."
+    #   2) "选 N件/个 <品类> (上架)到 <站点>"(如 选3件耳环到TH)
+    #   3) "上架/选 N个/件 <品类> 到 <站点>"(含中文数字,如 上架三个耳环到ph站点)
+    if re.search(
+        r"(从采集库|从库|从选品|选品库).*(选|上)"
+        r"|选.*(件|个).*(上架|到(泰国|泰|越南|越|菲律宾|菲|th|ph|vn|TH|PH|VN))"
+        r"|(上架|选).*(件|个)(项链|耳环|手链|戒指|发饰|配饰).*到(泰国|泰|越南|越|菲律宾|菲|th|ph|vn|TH|PH|VN)",
+        t, re.I):
         return "select_upload"
     # 无关/闲聊/问候,没有任何干活信号 → 无法理解,不执行
     if not _is_actionable(t):
         return "reject"
     return "upload"
+
+
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def _cn_to_int(s):
+    """中文数字 → int。支持 一~九/十/十几/几十/几十几;非数字返回 None。"""
+    if not s:
+        return None
+    if s == "十":
+        return 10
+    if "十" in s:
+        parts = s.split("十")
+        tens = _CN_DIGITS.get(parts[0]) if parts[0] else 1
+        ones = _CN_DIGITS.get(parts[1]) if len(parts) > 1 and parts[1] else 0
+        if tens is None or ones is None:
+            return None
+        return tens * 10 + ones
+    if len(s) == 1:
+        return _CN_DIGITS.get(s)
+    return None
 
 
 def parse_instruction(text):
@@ -225,7 +261,13 @@ def parse_instruction(text):
     # 先剥掉 @机器人/@_user_1 等提及token,否则 "10个" 前先匹配到 mention 里的数字
     text = re.sub(r"@\S+", "", text)
     m = re.search(r"(\d+)", text)
-    target = int(m.group(1)) if m else 0  # 无数字=0(出全部合格候选),不再默认 20
+    if m:
+        target = int(m.group(1))
+    else:
+        # 中文数字兜底:"三个"→3,"十五件"→15。必须带量词 件/个 才认,
+        # 避免"星期三"里的"三"误判。
+        cm = re.search(r"([一二两三四五六七八九十]+)[件个]", text)
+        target = _cn_to_int(cm.group(1)) if cm else 0
     cat = next((kw for kw in ("项链", "耳环", "手链", "戒指", "发饰", "配饰")
                 if kw in text), "")
     return {"target": target, "category": cat,
@@ -270,6 +312,10 @@ def _interpret(text):
     if mode not in ("upload", "review_only", "capture_db", "capture_only",
                     "select_upload", "stop", "reject"):
         mode = fallback["mode"]
+    # select_upload 是强信号(正则命中:数量+品类+目标站点):LLM 提示词虽已补该模式,
+    # 仍可能误报成 upload,这里以正则为准 —— 防止"选品上架"指令被误跑成全流水线。
+    if fallback["mode"] == "select_upload":
+        mode = "select_upload"
     category = str(sr.get("category") or "").strip()
     if category not in ("项链", "耳环", "手链", "戒指", "发饰", "配饰"):
         category = fallback["category"]
@@ -465,18 +511,17 @@ def _select_upload(text: str, intent: dict) -> dict:
     en_cat = _CN_CATEGORY_TO_EN.get(cn_cat, "")
     target = int(intent.get("target") or 0)
 
-    # 已在上架表活跃的行:同 SPU×同店铺 不重复生成
+    # 去重口径:同 SPU×同店铺 已有任何行(含「已上架」)都跳过 —— 只跳过活跃行
+    # 会在飞书重投旧消息(实测:旧耳环消息晚到再处理)时把已上架商品再选一遍,
+    # 产生重复任务行。任何已存在的行都代表该商品在这家店已被处理/正在处理。
+    # 飞书 search 不支持嵌套 or 分组(99992402),先按店铺平铺查该店所有行。
     try:
-        active = bitable.list_records([
-            ("店铺站点", "is", site),
-            {"conjunction": "or",
-             "conditions": [("状态", "is", st) for st in _ACTIVE_LISTING_STATUSES]},
-        ])
+        site_rows = bitable.list_records([("店铺站点", "is", site)])
+        active_spus = {str((r.get("fields") or {}).get("SPU") or "").strip()
+                       for r in site_rows if (r.get("fields") or {}).get("SPU")}
     except Exception as exc:
-        active = []
-        print(f"[select_upload] 查上架表活跃行失败: {exc}", flush=True)
-    active_spus = {str((r.get("fields") or {}).get("SPU") or "").strip()
-                   for r in active if (r.get("fields") or {}).get("SPU")}
+        active_spus = set()
+        print(f"[select_upload] 查上架表已有行失败: {exc}", flush=True)
 
     db = SessionLocal()
     try:
