@@ -175,6 +175,11 @@ def update_record(record_id, fields, table_id=None):
                     table_id=table_id)
 
 
+def delete_record(record_id, table_id=None):
+    """删除一行（默认上架表）。幂等:记录不存在会抛 BitableError,调用方自行决定是否吞。"""
+    return _request("DELETE", f"/records/{record_id}", table_id=table_id)
+
+
 def list_fields(table_id=None):
     """返回 [{field_name, type, ...}]（默认上架表），用于自检字段是否齐全。"""
     return _request("GET", "/fields", table_id=table_id).get("items", [])
