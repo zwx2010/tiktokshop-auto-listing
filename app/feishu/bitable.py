@@ -245,6 +245,43 @@ def pick_upsert(fields):
     return "created"
 
 
+def delete_pick_by_goods_id(goods_id):
+    """按 商品ID 删除选品表(表A)行 —— 删除商品的连带动作,表A 不再展示。
+    不存在静默跳过。返回实际删除行数。"""
+    gid = str(goods_id or "").strip()
+    if not gid:
+        return 0
+    app_token, pick_tid, _listing_tid = _tokens()
+    rows = list_records([("商品ID", "is", gid)], table_id=pick_tid)
+    deleted = 0
+    for r in rows:
+        try:
+            delete_record(r["record_id"], table_id=pick_tid)
+            deleted += 1
+        except Exception as exc:
+            print(f"[bitable] 删选品表行失败(gid={gid}): {exc}", flush=True)
+    return deleted
+
+
+def mark_listing_pending_failed(spu, reason):
+    """删除商品的连带动作:把上架表(表B)中该 SPU 的「待上架」任务标「上架失败」。
+    在跑的中间态行由流水线 active 过滤在处理时如实标失败。返回标记行数。"""
+    spu = str(spu or "").strip()
+    if not spu:
+        return 0
+    rows = list_records([("SPU", "is", spu), ("状态", "is", "待上架")])
+    if not rows:
+        return 0
+    try:
+        batch_update([{"record_id": r["record_id"],
+                       "fields": {"状态": "上架失败", "失败原因": reason}}
+                      for r in rows])
+    except Exception as exc:
+        print(f"[bitable] 标上架失败失败(spu={spu}): {exc}", flush=True)
+        return 0
+    return len(rows)
+
+
 # ---------------------------------------------------------------- 自检
 def self_check():
     """连通性 + 双表字段契约自检。返回 [(ok: bool, msg: str), ...]。"""

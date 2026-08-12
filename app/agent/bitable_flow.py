@@ -133,14 +133,15 @@ def _ensure_products(rows):
             p = None
             if spu:
                 p = (db.query(Product).options(selectinload(Product.skus))
-                     .filter(Product.spu == spu).first())
+                     .filter(Product.spu == spu, Product.active == True).first())
             if p is None and gid:
                 p = (db.query(Product).options(selectinload(Product.skus))
-                     .filter(Product.source_goods_id == gid).first())
+                     .filter(Product.source_goods_id == gid,
+                             Product.active == True).first())
             if p is None:
                 _set_rows([r], ST_FAIL,
                           failure=f"SPU/商品ID 不在采集库(spu={spu or '-'} "
-                                  f"gid={gid or '-'}),请先采集入库")
+                                  f"gid={gid or '-'}),商品未入库或已被删除")
                 print(f"[bitable] 行不在采集库,标失败: {spu or gid}", flush=True)
                 continue
             found.setdefault(p.source_goods_id or f"B{p.id}", p)

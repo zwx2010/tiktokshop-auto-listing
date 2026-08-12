@@ -1,7 +1,8 @@
 """飞书接入路由。
 
-- POST /api/feishu/webhook   事件订阅(消息/审批/URL 验证握手)
-- POST /api/feishu/card      交互卡片按钮回调(通过/驳回 → handlers.on_card_action)
+- POST /api/feishu/webhook      事件订阅(消息/审批/URL 验证握手)
+- POST /api/feishu/card         交互卡片按钮回调(通过/驳回 → handlers.on_card_action)
+- POST|GET /api/feishu/table-delete  选品表「删除商品」按钮 → 自动化流程 HTTP 请求
 
 配置: config/feishu.local.json
   {app_id, app_secret, encrypt_key, verification_token, group_bot_webhook}
@@ -167,3 +168,32 @@ async def feishu_card(request: Request):
     if toast:
         resp["toast"] = {"type": "success", "content": toast}
     return resp
+
+
+@router.post("/feishu/table-delete")
+@router.get("/feishu/table-delete")
+async def feishu_table_delete(request: Request):
+    """选品表「删除商品」按钮的落点 —— 多维表格自动化流程发 HTTP 请求到这里。
+
+    自动化流程的请求没有飞书事件签名头,改为校验 body/query 里的
+    token == config 的 verification_token(本地调试 ALLOW_UNVERIFIED=1 放行)。
+    动作 = 软删商品 + 删选品表行 + 上架表待上架任务标失败,见 app/agent/archive.py。
+    """
+    raw = await request.body()
+    body = _body_bytes(raw)
+    query = request.query_params
+    token = body.get("token") or query.get("token")
+    spu = str(body.get("spu") or query.get("spu") or "").strip()
+    gid = str(body.get("goods_id") or query.get("goods_id") or "").strip()
+    if os.environ.get("ALLOW_UNVERIFIED") != "1":
+        cfg_tok = _cfg().get("verification_token", "")
+        if not cfg_tok or token != cfg_tok:
+            return {"code": 1, "msg": "token 校验失败"}
+    from ..agent import archive
+    result = archive.delete_product(spu=spu, goods_id=gid)
+    if result.get("ok"):
+        return {"code": 0,
+                "msg": f"已删除 {result.get('spu')}:选品表移除 "
+                       f"{result.get('pick_rows_deleted')} 行,上架表标记失败 "
+                       f"{result.get('tasks_failed')} 条"}
+    return {"code": 1, "msg": result.get("msg") or "删除失败"}

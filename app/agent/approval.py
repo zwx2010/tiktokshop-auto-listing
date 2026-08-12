@@ -525,7 +525,7 @@ def _select_upload(text: str, intent: dict) -> dict:
 
     db = SessionLocal()
     try:
-        q = db.query(Product).order_by(Product.id)
+        q = db.query(Product).filter(Product.active == True).order_by(Product.id)
         if en_cat:
             q = q.filter(Product.category == en_cat)
         products = q.all()

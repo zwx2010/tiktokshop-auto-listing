@@ -202,6 +202,7 @@ def main() -> int:
         rows = (
             db.query(Listing, Product)
             .join(Product, Listing.product_id == Product.id)
+            .filter(Product.active == True)
             .options(selectinload(Product.skus))
             .all()
         )

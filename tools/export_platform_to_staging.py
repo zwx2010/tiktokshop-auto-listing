@@ -91,8 +91,8 @@ GALLERY_MIN_DIM = int(_DEF.get("gallery_image_min_dim", 300))
 
 
 def load_products(db) -> list[Product]:
-    """按采集顺序（id 升序）加载全部商品。"""
-    return db.query(Product).order_by(Product.id).all()
+    """按采集顺序（id 升序）加载全部商品(排除已在采集表删除的)。"""
+    return db.query(Product).filter(Product.active == True).order_by(Product.id).all()
 
 
 def load_skus(db, product_ids) -> dict[int, list[ProductSku]]:
@@ -515,7 +515,10 @@ def main() -> None:
             gid_list = load_selected_gids(Path(args.selected_file))
             prod_map = {
                 p.source_goods_id: p
-                for p in db.query(Product).filter(Product.source_goods_id.in_(gid_list))
+                for p in db.query(Product).filter(
+                    Product.source_goods_id.in_(gid_list),
+                    Product.active == True,
+                )
             }
             missing = [g for g in gid_list if g not in prod_map]
             if missing:

@@ -153,6 +153,7 @@ def _print_callback_hint(url: str, changed: bool) -> None:
         print("  URL 与上次相同,飞书后台无需改动。")
     print(f"    事件订阅回调 : {url}/api/feishu/webhook")
     print(f"    交互卡片回调 : {url}/api/feishu/card")
+    print(f"    删除商品回调 : {url}/api/feishu/table-delete(选品表按钮自动化流程用)")
     print("  若回调地址没配过,先到飞书后台『事件订阅』把地址配上,并发布新版本。")
     print("=" * 62)
 

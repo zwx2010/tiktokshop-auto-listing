@@ -21,7 +21,7 @@ def index(request: Request):
     try:
         stats = {
             "accounts": db.query(func.count(Account.id)).scalar() or 0,
-            "products": db.query(func.count(Product.id)).scalar() or 0,
+            "products": db.query(func.count(Product.id)).filter(Product.active == True).scalar() or 0,
             "skus": db.query(func.count(ProductSku.id)).scalar() or 0,
             "listings": db.query(func.count(Listing.id)).scalar() or 0,
         }
@@ -29,6 +29,7 @@ def index(request: Request):
         # selectinload 预加载 skus，避免 Session 关闭后惰性加载报 DetachedInstanceError
         products = (
             db.query(Product)
+            .filter(Product.active == True)
             .options(selectinload(Product.skus))
             .order_by(Product.id.desc())
             .limit(15)

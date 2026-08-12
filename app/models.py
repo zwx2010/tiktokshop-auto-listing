@@ -73,6 +73,7 @@ class Product(Base):
     weight_g: Mapped[int] = mapped_column(Integer, default=80)
     dedup_key: Mapped[str] = mapped_column(String(255), unique=True)  # pdd:{goods_id}
     status: Mapped[str] = mapped_column(String(16), default="ingested")  # discovered/ingested/listed/failed
+    active: Mapped[bool] = mapped_column(default=True)  # 软删标记:False=已在采集表删除,不再出表/上架
     skip_reason: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -95,7 +95,7 @@ def accounts(db: Session = Depends(get_db)):
 
 @router.get("/products")
 def products(db: Session = Depends(get_db), limit: int = 100):
-    rows = db.query(Product).order_by(Product.id.desc()).limit(limit).all()
+    rows = db.query(Product).filter(Product.active == True).order_by(Product.id.desc()).limit(limit).all()
     out = []
     for p in rows:
         out.append({

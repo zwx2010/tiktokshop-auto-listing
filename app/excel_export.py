@@ -51,6 +51,7 @@ def build_workbook(db) -> Workbook:
     """把全部商品/上架情况渲染成双 sheet 的 Workbook。"""
     products = (
         db.query(Product)
+        .filter(Product.active == True)
         .options(selectinload(Product.skus))
         .order_by(Product.id.desc())
         .all()
