@@ -38,7 +38,7 @@ from app.pipeline import ingest_capture  # noqa: E402
 
 
 def _sync_pick_table(product) -> None:
-    """新入库商品写一行到飞书选品采集表(表A)。
+    """新入库商品写一行到飞书选品采集表(表A),并补 主图图片 + SKU明细。
 
     幂等(按商品ID查重);失败只记日志不中断采集——选品表是展示层,
     平台库才是源头事实。缺飞书配置时 bitable 抛 BitableUnconfigured,同样吞掉。
@@ -48,7 +48,7 @@ def _sync_pick_table(product) -> None:
         created = product.created_at
         if created and created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
-        result = bitable.pick_upsert({
+        record_id = bitable.pick_upsert({
             "SPU": product.spu,
             "商品ID": product.source_goods_id,
             "标题(中文)": (product.title_cn or "")[:200],
@@ -58,11 +58,32 @@ def _sync_pick_table(product) -> None:
             "目标市场": (product.market_code or "TH").upper(),
             "采集时间": int(created.timestamp() * 1000) if created else None,
         })
-        if result == "created":
+        if record_id:
             print(f"[bitable] 选品表新增 {product.spu} "
                   f"{str(product.title_cn)[:20]}", flush=True)
+            _fill_pick_visual(record_id, product)
     except Exception as exc:
         print(f"[bitable] 选品表同步失败({product.spu}): {exc}", flush=True)
+
+
+def _fill_pick_visual(record_id, product) -> None:
+    """新商品进选品表后补 主图图片 + SKU明细(展示层,失败只记日志不中断采集)。
+
+    table_id 必须显式传选品表(表A),否则默认写进上架表导致 record not found。"""
+    try:
+        _app_token, pick_tid, _listing_tid = bitable._tokens()
+        n = bitable.fill_record_images(
+            record_id, [product.main_image_url] if product.main_image_url else [],
+            field_names=[bitable.PICK_MAIN_IMAGE_FIELD], table_id=pick_tid)
+        detail = bitable.sku_detail_lines(product.skus)
+        if detail:
+            bitable.batch_update(
+                [{"record_id": record_id,
+                  "fields": {bitable.SKU_DETAIL_FIELD: detail}}],
+                table_id=pick_tid)
+        print(f"[bitable] 选品表主图+SKU明细(record={record_id},图{n}张)", flush=True)
+    except Exception as exc:
+        print(f"[bitable] 选品表补图失败(record={record_id}): {exc}", flush=True)
 
 # 与 app/agent/tasks.py 同源：ROSEEK_PKG_DIR 可覆盖，缺省用项目根的相对路径
 _PKG = os.environ.get(

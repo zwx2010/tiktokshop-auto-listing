@@ -24,6 +24,7 @@
 
 所有写表函数默认指向上架表(表B);采集同步单独走 pick_* 写选品表(表A)。
 """
+import threading
 import time
 
 import requests
@@ -43,6 +44,17 @@ SITE_OPTIONS = ["TH店铺", "PH店铺", "VN店铺"]
 CATEGORY_OPTIONS = ["Hair Accessory", "Necklace", "Bracelet", "Earrings",
                     "Sunglasses", "Hat", "Scarf", "Belt", "Ring",
                     "Fashion Accessory"]
+
+# 展示列: 上架表(表B) 图1~图9 附件字段(一列一张,商品图最多 9 张) + SKU明细;
+# 选品表(表A) 主图图片 附件字段 + SKU明细。图片列值 = [{"file_token": ...}],
+# 不能直接填外部 URL(实测 AttachFieldConvFail),必须先下载→上传飞书拿 token。
+IMAGE_COLUMNS = [f"图{i}" for i in range(1, 10)]
+SKU_DETAIL_FIELD = "SKU明细"
+PICK_MAIN_IMAGE_FIELD = "主图图片"
+
+# 进程内 URL→file_token 缓存: 同商品多站点行 / 多次操作复用,避免重复上传
+_IMAGE_TOKEN_CACHE: dict[str, str] = {}
+_IMAGE_LOCK = threading.Lock()
 
 
 class BitableError(Exception):
@@ -232,17 +244,17 @@ def pick_upsert(fields):
     """采集入库后把商品写入选品表(表A),按 商品ID 幂等:已存在跳过,不存在 create。
 
     fields 至少含 商品ID/SPU/标题(中文)/分类/成本价(CNY)/主图/目标市场/采集时间。
-    返回 "exists"(跳过) 或 "created"(新增)。
+    返回 新建行的 record_id(新增);已存在/无商品ID 返回 None —— 调用方据此
+    补写 主图图片/SKU明细(展示层,失败不影响采集主流程)。
     """
     gid = str(fields.get("商品ID") or "")
     if not gid:
-        return "exists"
+        return None
     app_token, pick_tid, _listing_tid = _tokens()
     rows = list_records([("商品ID", "is", gid)], table_id=pick_tid)
     if rows:
-        return "exists"
-    create_record(fields, table_id=pick_tid)
-    return "created"
+        return None
+    return create_record(fields, table_id=pick_tid)
 
 
 def delete_pick_by_goods_id(goods_id):
@@ -282,6 +294,158 @@ def mark_listing_pending_failed(spu, reason):
     return len(rows)
 
 
+# ---------------------------------------------------------------- 图片 / SKU 展示列
+def _ensure_columns(table_id, specs):
+    """幂等建字段: 查已有 field_name,缺的才创建。返回新建字段数。"""
+    existing = {str(f.get("field_name") or "") for f in list_fields(table_id=table_id)}
+    created = 0
+    for spec in specs:
+        name = spec["field_name"]
+        if name in existing:
+            continue
+        try:
+            _request("POST", "/fields", payload=spec, table_id=table_id)
+            created += 1
+        except Exception as exc:
+            print(f"[bitable] 建字段失败({name}): {exc}", flush=True)
+    if created:
+        print(f"[bitable] 表 {table_id} 新建 {created} 个字段", flush=True)
+    return created
+
+
+def ensure_listing_image_columns():
+    """上架表(表B)建 图1~图9 附件字段 + SKU明细 文本字段(幂等)。"""
+    _app_token, _pick_tid, listing_tid = _tokens()
+    return _ensure_columns(listing_tid,
+                           [{"field_name": n, "type": 17} for n in IMAGE_COLUMNS]
+                           + [{"field_name": SKU_DETAIL_FIELD, "type": 1}])
+
+
+def ensure_pick_visual_columns():
+    """选品表(表A)建 主图图片 附件字段 + SKU明细 文本字段(幂等)。"""
+    _app_token, pick_tid, _listing_tid = _tokens()
+    return _ensure_columns(pick_tid, [
+        {"field_name": PICK_MAIN_IMAGE_FIELD, "type": 17},
+        {"field_name": SKU_DETAIL_FIELD, "type": 1},
+    ])
+
+
+def _image_filename(url):
+    """从 URL 提取带扩展名的文件名;取不到则兜底 image.jpg。"""
+    from urllib.parse import unquote, urlparse
+    base = unquote(urlparse(url).path).rsplit("/", 1)[-1]
+    if base and "." in base.rsplit("/", 1)[-1]:
+        return base[:100]
+    return "image.jpg"
+
+
+def _image_mime(fname):
+    ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+    return {"png": "image/png", "webp": "image/webp", "gif": "image/gif",
+            "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(ext, "image/jpeg")
+
+
+def upload_image_url(url, timeout_dl=20, timeout_up=60):
+    """下载外部商品图 → 上传飞书拿 file_token(附件字段用)。
+
+    parent_type=bitable_image + parent_node=app_token 是 bitable 附件的固定参数
+    (实测缺了拿不到合法 token)。进程内按 URL 缓存 file_token;任何一步失败
+    返回 None 并记日志,不抛异常 —— 调用方据此留空该图片列,不中断整行回填。
+    """
+    url = str(url or "").strip()
+    if not url:
+        return None
+    with _IMAGE_LOCK:
+        if url in _IMAGE_TOKEN_CACHE:
+            return _IMAGE_TOKEN_CACHE[url]
+    try:
+        r = requests.get(url, timeout=timeout_dl, headers={
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/120 Safari/537.36")})
+    except Exception as exc:
+        print(f"[bitable] 下载图片异常 {url[:80]}: {exc}", flush=True)
+        return None
+    if r.status_code != 200 or not r.content:
+        print(f"[bitable] 下载图片失败 HTTP {r.status_code}: {url[:80]}", flush=True)
+        return None
+    content = r.content
+    fname = _image_filename(url)
+    token, err = app_client.get_tenant_access_token()
+    if err:
+        print(f"[bitable] 上传图片取 token 失败: {err}", flush=True)
+        return None
+    data = {"file_name": fname, "parent_type": "bitable_image",
+            "parent_node": _tokens()[0], "size": str(len(content))}
+    try:
+        ur = requests.post(
+            "https://open.feishu.cn/open-apis/drive/v1/medias/upload_all",
+            headers={"Authorization": f"Bearer {token}"},
+            data=data,
+            files={"file": (fname, content, _image_mime(fname))},
+            timeout=timeout_up)
+        ud = ur.json()
+    except Exception as exc:
+        print(f"[bitable] 上传图片异常 {url[:80]}: {exc}", flush=True)
+        return None
+    if ud.get("code") != 0:
+        print(f"[bitable] 上传图片失败 code={ud.get('code')} msg={ud.get('msg')}: "
+              f"{url[:80]}", flush=True)
+        return None
+    ft = (ud.get("data") or {}).get("file_token")
+    if not ft:
+        return None
+    with _IMAGE_LOCK:
+        _IMAGE_TOKEN_CACHE[url] = ft
+    return ft
+
+
+def fill_record_images(record_id, urls, table_id=None, field_names=None):
+    """把 urls 前 9 张逐个上传写进附件字段 field_names[i](缺省 图1~图9)。
+
+    单图失败只留空该列,其余照填;整行 batch_update 失败返回 0。返回成功填图数。
+    """
+    if not record_id or not urls:
+        return 0
+    if field_names is None:
+        field_names = IMAGE_COLUMNS
+    fields = {}
+    filled = 0
+    for i, url in enumerate(urls[:len(field_names)]):
+        ft = upload_image_url(url)
+        if ft:
+            fields[field_names[i]] = [{"file_token": ft}]
+            filled += 1
+    if fields:
+        try:
+            batch_update([{"record_id": record_id, "fields": fields}], table_id=table_id)
+        except Exception as exc:
+            print(f"[bitable] 写图字段失败(record={record_id}): {exc}", flush=True)
+            return 0
+    return filled
+
+
+def sku_detail_lines(skus):
+    """把 product_skus 转「颜色 = 供应商SKU号」多行文本,发货按 SKU 号对应到 SPU。
+
+    兼容 ORM 对象与 dict;无 SKU 号的行只列颜色。"""
+    lines = []
+    for s in skus or []:
+        if isinstance(s, dict):
+            color = str(s.get("color") or "").strip()
+            sid = str(s.get("supplier_sku_id") or "").strip()
+        else:
+            color = str(getattr(s, "color", "") or "").strip()
+            sid = str(getattr(s, "supplier_sku_id", "") or "").strip()
+        if color and sid:
+            lines.append(f"{color} = {sid}")
+        elif color:
+            lines.append(color)
+        elif sid:
+            lines.append(sid)
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------- 自检
 def self_check():
     """连通性 + 双表字段契约自检。返回 [(ok: bool, msg: str), ...]。"""
@@ -306,7 +470,7 @@ def self_check():
     _check_table_fields(out, listing_tid, [
         "SPU", "商品ID", "标题(中文)", "分类", "成本价(CNY)", "店铺站点", "状态",
         "锁定时间", "上架时间", "上架链接", "失败原因", "备注",
-    ])
+    ] + IMAGE_COLUMNS + [SKU_DETAIL_FIELD])
     _check_single_select(out, listing_tid, "状态", LISTING_STATUSES)
     _check_single_select(out, listing_tid, "店铺站点", SITE_OPTIONS)
 
@@ -315,7 +479,7 @@ def self_check():
     _check_table_fields(out, pick_tid, [
         "SPU", "商品ID", "标题(中文)", "分类", "成本价(CNY)", "主图",
         "目标市场", "采集时间", "备注",
-    ])
+    ] + [PICK_MAIN_IMAGE_FIELD, SKU_DETAIL_FIELD])
     _check_single_select(out, pick_tid, "分类", CATEGORY_OPTIONS)
     _check_single_select(out, pick_tid, "目标市场", ["TH", "PH", "VN"])
     return out

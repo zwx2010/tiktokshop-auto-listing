@@ -543,6 +543,7 @@ def _select_upload(text: str, intent: dict) -> dict:
 
     created = 0
     skipped = 0
+    image_jobs = []
     for p in products:
         if target and created >= target:
             break
@@ -558,10 +559,16 @@ def _select_upload(text: str, intent: dict) -> dict:
             "状态": "待上架",
         }
         try:
-            bitable.create_record(fields)
+            record_id = bitable.create_record(fields)
+            if record_id:
+                urls = p.image_urls or ([p.main_image_url] if p.main_image_url else [])
+                image_jobs.append((record_id, urls, p.skus))
             created += 1
         except Exception as exc:
             print(f"[select_upload] 写上架表失败 {p.spu}: {exc}", flush=True)
+    if image_jobs:
+        # 新任务行的图片+SKU 后台真实上传填充(几十秒级),审批卡不阻塞
+        threading.Thread(target=_fill_listing_images, args=(image_jobs,), daemon=True).start()
     summary = (f"已从采集库选 {created} 件"
                + (f"「{cn_cat}」" if cn_cat else "全部品类")
                + f"生成上架任务({site}),轮询会自动跑")
@@ -576,6 +583,25 @@ def _select_upload(text: str, intent: dict) -> dict:
         title="上架机器人", color="blue", fields=fields, buttons=[]))
     return {"run_id": None, "mode": "select_upload", "intent": intent,
             "created": created, "sent": sent}
+
+
+def _fill_listing_images(jobs):
+    """新生成上架任务行的后台图片+SKU 填充(真实上传,失败记日志不阻塞主流程)。"""
+    from ..feishu import bitable
+    done = 0
+    for record_id, urls, skus in jobs:
+        try:
+            n = bitable.fill_record_images(record_id, urls or [])
+            detail = bitable.sku_detail_lines(skus)
+            if detail:
+                bitable.batch_update(
+                    [{"record_id": record_id,
+                      "fields": {bitable.SKU_DETAIL_FIELD: detail}}])
+            done += 1
+            print(f"[select_upload] 填图 {n} 张 + SKU明细(record={record_id})", flush=True)
+        except Exception as exc:
+            print(f"[select_upload] 填图失败(record={record_id}): {exc}", flush=True)
+    print(f"[select_upload] 后台填图/SKU 完成 {done}/{len(jobs)} 行", flush=True)
 
 
 def handle_instruction(text):
