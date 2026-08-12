@@ -62,6 +62,7 @@ LISTING_FIELDS = [
      "property": {"options": [{"name": c} for c in [
          "Hair Accessory", "Necklace", "Bracelet", "Earrings", "Sunglasses",
          "Hat", "Scarf", "Belt", "Ring", "Fashion Accessory"]]}},
+    {"field_name": "成本价(CNY)", "type": NUMBER},
     {"field_name": "店铺站点", "type": SINGLE,
      "property": {"options": [{"name": s} for s in ["TH店铺", "PH店铺", "VN店铺"]]}},
     {"field_name": "状态", "type": SINGLE,
@@ -106,9 +107,18 @@ def _existing_tables():
 
 
 def _create_table(name, fields):
+    # 创建数据表的 fields 结构不支持 description 键(只支持 field_name/type/ui_type/property),
+    # 剥掉再发,description 仅留在脚本里当字段说明用。
+    body_fields = [
+        {k: v for k, v in f.items() if k != "description"}
+        for f in fields
+    ]
     data = _req("POST", "/tables",
-                payload={"table": {"name": name, "fields": fields}})
-    return (data.get("table") or {}).get("table_id") or ""
+                payload={"table": {"name": name, "fields": body_fields}})
+    # 创建数据表的响应里 table_id 直接挂在 data 下(data.table_id),
+    # 不兼容 GET /tables 的 items 结构,这里两种都认。
+    tbl = data.get("table") or {}
+    return str(tbl.get("table_id") or data.get("table_id") or "")
 
 
 def main() -> int:

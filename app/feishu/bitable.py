@@ -106,30 +106,52 @@ def _request(method, suffix, *, payload=None, timeout=15, table_id=None):
 
 
 def _condition_item(item):
-    """单个筛选条件 → 飞书 filter 结构。支持嵌套（dict 传子 filter 实现 or 分组）。"""
+    """单个筛选条件 → 飞书 filter 结构。仅支持单层条件:
+    飞书 search 的 conjunction 只能在顶层,嵌套 or/and 分组不被接受
+    (实测 code=99992402 field validation failed)。
+    """
     if isinstance(item, dict):
-        return {"conjunction": item.get("conjunction", "and"),
-                "conditions": [_condition_item(c) for c in item.get("conditions", [])]}
+        raise BitableError("飞书 search 不支持嵌套 filter(conjunction 只能顶层单层),"
+                           "请平铺条件,或多次查询后本地合并")
     fn, op, v = item
     return {"field_name": fn, "operator": op,
             "value": [v] if isinstance(v, str) else v}
 
 
+def _normalize_fields(fields):
+    """把飞书读回的字段值归一化:文本字段常以分段数组返回
+    [{text, type}, ...](一行一段),统一摊平回纯字符串;单选/数字/日期原样保留。
+    若不做这步,`SPU` 读到的是 "[{'text': 'SPU000002', 'type': 'text'}]",
+    跟平台库字符串 'SPU000002' 比对永远不相等(实测整批标上架失败)。
+    """
+    if not isinstance(fields, dict):
+        return fields
+    out = {}
+    for k, v in fields.items():
+        if isinstance(v, list) and v and all(isinstance(x, dict) for x in v) \
+                and any("text" in x for x in v):
+            out[k] = "".join(str(x.get("text") or "") for x in v)
+        else:
+            out[k] = v
+    return out
+
+
 # ---------------------------------------------------------------- 上架表(表B)
 def list_records(filters, conjunction="and", page_size=100, table_id=None):
-    """搜索记录（默认上架表）。filters 示例:
-        [("状态", "is", "待上架"), ("店铺站点", "is", "TH店铺")]
-        [({"conjunction": "or",
-           "conditions": [("状态", "is", "处理中"), ("状态", "is", "上架中")]},
-          ("锁定时间", "isLess", 1700000000000))]
+    """搜索记录（默认上架表）。filters: [(field_name, operator, value), ...],
+    顶层按 conjunction 组合。注意:飞书 search 只支持单层条件,嵌套 or/and 分组
+    会被拒(99992402),「某字段∈多值 且 其他条件」请先平铺查一层再本地过滤。
+    日期范围比较 value 用 ["ExactDate", "毫秒时间戳"]。
     返回 [{record_id, fields, create_time, ...}]。"""
-    payload = {"page_size": page_size,
-               "sort": [{"field_name": "创建时间", "desc": False}]}
+    # 注意:不传 sort —— 飞书 search 的 sort.field_name 必须是表内真实字段名,
+    # 而「创建时间」不是表字段(API 建的表没有它),传了会 InvalidSort。
+    payload = {"page_size": page_size}
     if filters:
         payload["filter"] = {"conjunction": conjunction,
                              "conditions": [_condition_item(c) for c in filters]}
     data = _request("POST", "/records/search", payload=payload, table_id=table_id)
-    return data.get("items", [])
+    return [dict(r, fields=_normalize_fields(r.get("fields") or {}))
+            for r in data.get("items", [])]
 
 
 def batch_update(records, table_id=None):
@@ -176,16 +198,19 @@ def pickup_pending(lock_from="待上架", lock_to="处理中", page_size=20,
     return rows
 
 
-def stale_locked(lock_statuses, stale_ms, lock_field="锁定时间"):
+def stale_locked(lock_statuses, stale_ms, lock_field="锁定时间", status_field="状态"):
     """找锁定超时的残留行（上架表）。进程崩溃会留下永远停在「处理中/…/上架中」
-    的行，轮询查「待上架」永远碰不到，必须显式回滚，否则整池货静默不动。"""
+    的行，轮询查「待上架」永远碰不到，必须显式回滚，否则整池货静默不动。
+
+    飞书 search 不支持嵌套 or 分组(「状态∈多值」+「锁定时间<截止」无法在服务端
+    单次表达),所以先按日期单条件查超时行,状态过滤在本地做。
+    """
     if not lock_statuses:
         return []
-    return list_records([
-        {"conjunction": "or",
-         "conditions": [("状态", "is", st) for st in lock_statuses]},
-        (lock_field, "isLess", int(time.time() * 1000) - stale_ms),
-    ])
+    cutoff = int(time.time() * 1000) - stale_ms
+    rows = list_records([(lock_field, "isLess", ["ExactDate", str(cutoff)])])
+    return [r for r in rows
+            if (r.get("fields") or {}).get(status_field) in lock_statuses]
 
 
 # ---------------------------------------------------------------- 选品表(表A)
@@ -237,7 +262,7 @@ def self_check():
     # 上架表(表B)
     out.append((True, "-- 上架情况表(表B) --"))
     _check_table_fields(out, listing_tid, [
-        "SPU", "商品ID", "标题(中文)", "分类", "店铺站点", "状态",
+        "SPU", "商品ID", "标题(中文)", "分类", "成本价(CNY)", "店铺站点", "状态",
         "锁定时间", "上架时间", "上架链接", "失败原因", "备注",
     ])
     _check_single_select(out, listing_tid, "状态", LISTING_STATUSES)
