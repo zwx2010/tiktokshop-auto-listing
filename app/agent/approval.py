@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
 
 from ..feishu import client as fc
@@ -67,9 +68,16 @@ def transition(run_id, decision, trigger_upload=None):
             return {"ok": True, "run_id": run_id, "status": snapshot["status"],
                     "decision": decision, "upload_status": "skipped",
                     "detail": "review_only:审批通过,不触发上架(只审不传)"}
+        # 「仅通过审图OK」:用审图过滤副本(已剔除无可用图的阻塞行)上传;
+        # 「通过全部」:全量原表。params 无 tables_ok(未生成过滤副本)时退化为原表。
+        params = dict(snapshot.get("params") or {})
+        if decision == "approve_ok":
+            ok_tables = params.get("tables_ok")
+            if ok_tables:
+                params["tables"] = ok_tables
         # 真上架耗时数分钟,不在回调里同步等(飞书 3s 超时)。
         # 后台线程跑真实上传,完成后推「上架结果卡」回群。
-        _launch_upload(run_id, snapshot["params"])
+        _launch_upload(run_id, params)
     upload_status = ""
     with _lock:
         st = _STATE.get(run_id)
@@ -216,17 +224,32 @@ def _detect_mode(text):
     # 只审不传:跑完采集/制表/审图,审批通过也不上架
     if re.search(r"(只审|先审|不传|别传|只看不|先看看|不上架|别上架)", t):
         return "review_only"
-    # 从采集库按品类选商品 → 生成上架表(表B)行,由轮询跑真实流水线。
-    # 命中形态三类(都必须有品类,避免把"上架10件到TH"这类无品类指令误判):
+    # 从采集库选商品 → 生成上架表(表B)行,由轮询跑真实流水线。
+    # 命中形态五类:
     #   1) "从采集库/从库/从选品/选品库 ... 选/上 ..."
     #   2) "选 N件/个 <品类> (上架)到 <站点>"(如 选3件耳环到TH)
     #   3) "上架/选 N个/件 <品类> 到 <站点>"(含中文数字,如 上架三个耳环到ph站点)
+    #   4) "上架/选 <站点> N个/件 <品类>"(站点词在数量前,如 上架ph站点3件耳环)
+    #   5) "上架/选 N个/件 + <站点>" 无品类(用户定规:提到上架没提采集,就不重新采集,
+    #      从采集库选 N 件,品类不限;如 上架ph站点3件 / 上架10件到TH)
+    #   6) "上架/选 N个/件" 无站点无品类(如 上架3件 / 上架3件耳环)——同样从库选,站点默认 ph;
+    #      模糊量词(一批/一些/几个)也算有数量信号(如 上架一批商品 → 从库选,数量默认 10)
+    site_pat = r"(泰国|泰|越南|越|菲律宾|菲|th|ph|vn|泰文|越文|英文)"
+    count_sig = r"([0-9一二两三四五六七八九十]+)?(件|个)|(一批|一些|一拨|几个|好几|多件|多款)"
     if re.search(
-        r"(从采集库|从库|从选品|选品库).*(选|上)"
-        r"|选.*(件|个).*(上架|到(泰国|泰|越南|越|菲律宾|菲|th|ph|vn|TH|PH|VN))"
-        r"|(上架|选).*(件|个)(项链|耳环|手链|戒指|发饰|配饰).*到(泰国|泰|越南|越|菲律宾|菲|th|ph|vn|TH|PH|VN)",
+        (r"(从采集库|从库|从选品|选品库).*(选|上)"
+         + r"|选.*(件|个).*(上架|到" + site_pat + ")"
+         + r"|(上架|选).*(件|个)(项链|耳环|手链|戒指|发饰|配饰).*(到)?(了)?" + site_pat
+         + r"|(上架|选).*" + site_pat + r".*(件|个)(项链|耳环|手链|戒指|发饰|配饰)"
+         + r"|(上架|选).*(件|个).*(到)?(了)?" + site_pat
+         + r"|(上架|选).*" + site_pat + r".*(件|个)"
+         + r"|(上架|选)[^\n]*(" + count_sig + r")(?!.*(采集|入库|到库|进库|存库))"),
         t, re.I):
         return "select_upload"
+    # 明确"采集N个品" → 采集入库到选品库(采集→入库→同步选品表,不做制表/审图/上架)。
+    # 放 select_upload 之后:"从采集库选3件耳环到TH" 已先命中 select_upload,不会被误判成纯采集。
+    if "采集" in t and "采集库" not in t:
+        return "capture_db"
     # 无关/闲聊/问候,没有任何干活信号 → 无法理解,不执行
     if not _is_actionable(t):
         return "reject"
@@ -268,6 +291,10 @@ def parse_instruction(text):
         # 避免"星期三"里的"三"误判。
         cm = re.search(r"([一二两三四五六七八九十]+)[件个]", text)
         target = _cn_to_int(cm.group(1)) if cm else 0
+        if not target:
+            # 模糊量词兜底:"一批/一些/一拨/几个" → 默认 10(用户定规)。
+            # 只在没有显式数字/中文数字时才认,不抢明确数量。
+            target = 10 if re.search(r"(一批|一些|一拨|几个|好几|多件|多款)", text) else 0
     cat = next((kw for kw in ("项链", "耳环", "手链", "戒指", "发饰", "配饰")
                 if kw in text), "")
     return {"target": target, "category": cat,
@@ -316,6 +343,10 @@ def _interpret(text):
     # 仍可能误报成 upload,这里以正则为准 —— 防止"选品上架"指令被误跑成全流水线。
     if fallback["mode"] == "select_upload":
         mode = "select_upload"
+    # capture_db 是强信号(正则命中:含"采集"且非"采集库"):LLM 提示词虽已补该模式,
+    # 仍可能误报成 upload,这里以正则为准 —— 防止"采集50个品"被误跑成全流水线上架。
+    if fallback["mode"] == "capture_db" and "采集" in clean and "采集库" not in clean:
+        mode = "capture_db"
     category = str(sr.get("category") or "").strip()
     if category not in ("项链", "耳环", "手链", "戒指", "发饰", "配饰"):
         category = fallback["category"]
@@ -529,6 +560,20 @@ def _select_upload(text: str, intent: dict) -> dict:
         if en_cat:
             q = q.filter(Product.category == en_cat)
         products = q.all()
+        # 会话存活期物化全部展示字段(防 db.close() 后访问 ORM 属性触发 lazy load):
+        # spu/source_goods_id/title_cn/category 是列,image_urls/main_image_url 是 JSON 列,
+        # skus 是 relationship —— 全部在 session 内取成纯 dict,后续循环/后台填图线程
+        # 零 ORM 访问,彻底断掉 DetachedInstanceError(lazy load 'skus')这类崩溃。
+        products = [{
+            "spu": p.spu or f"SPU{p.id:06d}",
+            "gid": p.source_goods_id,
+            "title": (p.title_cn or "")[:200],
+            "category": p.category or "",
+            "urls": p.image_urls or ([p.main_image_url] if p.main_image_url else []),
+            "skus": [{"color": s.color, "style": s.style,
+                      "supplier_sku_id": s.supplier_sku_id}
+                     for s in p.skus],
+        } for p in products]
     finally:
         db.close()
     if not products:
@@ -544,28 +589,30 @@ def _select_upload(text: str, intent: dict) -> dict:
     created = 0
     skipped = 0
     image_jobs = []
+    # 本批次号:轮询按它只捡本次新建的行,表里残留的旧「待上架」行不混批。
+    batch_id = f"sel_{time.strftime('%Y%m%d_%H%M%S')}"
     for p in products:
         if target and created >= target:
             break
-        if p.spu and p.spu in active_spus:
+        if p["spu"] and p["spu"] in active_spus:
             skipped += 1  # 该 SPU 在目标店铺已有任务在跑,不重复
             continue
         fields = {
-            "SPU": p.spu or f"SPU{p.id:06d}",
-            "商品ID": p.source_goods_id,
-            "标题(中文)": (p.title_cn or "")[:200],
-            "分类": p.category or "",
+            "SPU": p["spu"],
+            "商品ID": p["gid"],
+            "标题(中文)": p["title"],
+            "分类": p["category"],
             "店铺站点": site,
             "状态": "待上架",
+            "任务批次": batch_id,
         }
         try:
             record_id = bitable.create_record(fields)
             if record_id:
-                urls = p.image_urls or ([p.main_image_url] if p.main_image_url else [])
-                image_jobs.append((record_id, urls, p.skus))
+                image_jobs.append((record_id, p["urls"], p["skus"]))
             created += 1
         except Exception as exc:
-            print(f"[select_upload] 写上架表失败 {p.spu}: {exc}", flush=True)
+            print(f"[select_upload] 写上架表失败 {p['spu']}: {exc}", flush=True)
     if image_jobs:
         # 新任务行的图片+SKU 后台真实上传填充(几十秒级),审批卡不阻塞
         threading.Thread(target=_fill_listing_images, args=(image_jobs,), daemon=True).start()
@@ -643,7 +690,9 @@ def handle_instruction(text):
     create(run_id, params=params)
     stages = {}
     p = {**params}
-    timeouts = {"collect": 600, "table": 420, "review": 420}
+    # 采集 75 件实测约 12 分钟(720s+);采集支持自检回补(不够目标继续补采),时长更长——
+    # 600s 曾导致误报"采集失败",先提到 1200,补采机制后提到 1800 给足缓冲
+    timeouts = {"collect": 1800, "table": 420, "review": 420}
 
     # 只采集:跑完 collect 回结果卡就结束(market 已从意图贯穿 collect 提示词)
     if mode == "capture_only":
@@ -717,7 +766,10 @@ def handle_instruction(text):
     with _lock:
         st = _STATE.get(run_id)
         if st:
-            st["params"] = {**st["params"], "tables": upload_tables, "run_dir": run_dir}
+            # tables=全量原表(「通过全部」用);tables_ok=审图过滤副本
+            # (仅通过审图OK 用,已剔除无可用图的阻塞行)。transition 按 decision 选。
+            st["params"] = {**st["params"], "tables": tables,
+                            "tables_ok": upload_tables, "run_dir": run_dir}
             st["candidates"] = candidates
             st["stages"] = {k: _stage_dict(v) for k, v in stages.items()}
 
@@ -795,7 +847,8 @@ def build_bridge_card(run_id, stages):
     skipped = int(br.get("skipped") or 0)
     cost_filtered = int(br.get("cost_filtered") or 0)
     errs = br.get("errors") or []
-    fields = [("采集件数", str(captured)),
+    fields = [("模式", "采集入库"),
+              ("采集件数", str(captured)),
               ("入库件数", str(imported)),
               ("已存在", str(already)),
               ("跳过", str(skipped)),

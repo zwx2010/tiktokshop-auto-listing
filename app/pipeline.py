@@ -162,7 +162,6 @@ def build_listing(
     representative_cost = min(costs)
     pricing = price_skus(market, representative_cost, product.weight_g)
 
-    coze = coze or get_coze_client()
     style_code = str(product.source_goods_id)[-4:]
     ctx = {
         "goods_id": product.source_goods_id,
@@ -173,7 +172,20 @@ def build_listing(
         "styles": [s.style for s in skus if s.style],
         "source_title_cn": product.title_cn,
     }
-    copy = coze.generate_copy(ctx, market)
+    # 真实文案源(codex 表 / Coze HTTP)取不到时,不抛错中断入库:
+    # get_coze_client() 无 codex 数据/COZE_API_TOKEN 也会抛 —— 一起包进 try;
+    # 创建 Listing 但标 copy_missing —— export 会跳过缺文案的件,绝不带假/空文案上架;
+    # 之后由 scripts/regenerate_listing_copy.py --mode llm 用真实 Claude 补文案再标 ready。
+    try:
+        coze = coze or get_coze_client()
+        copy = coze.generate_copy(ctx, market)
+        title, desc = copy.title, copy.description
+        status = "ready" if (title and desc) else "copy_missing"
+    except Exception as exc:
+        print(f"[build_listing] 文案源不可用({product.source_goods_id}/{market}): "
+              f"{str(exc)[:80]} → copy_missing", flush=True)
+        title, desc = "", ""
+        status = "copy_missing"
 
     # SKU 快照：逐 SKU 定价
     snapshot = []
@@ -194,14 +206,14 @@ def build_listing(
         product_id=product.id,
         account_id=account_id,
         market_code=market,
-        title=copy.title,
-        description=copy.description,
+        title=title,
+        description=desc,
         price=pricing["display_price"],
         target_sale_price=pricing["target_sale_price"],
         currency=pricing["currency"],
         discount_rate=pricing["discount_rate"],
         seller_sku=snapshot[0]["seller_sku"] if snapshot else f"PDD-{market}-{product.source_goods_id}",
-        listing_status="ready",
+        listing_status=status,
         sku_snapshot=snapshot,
     )
     db.add(listing)

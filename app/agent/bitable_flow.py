@@ -333,12 +333,15 @@ def _export_tables(mkt: str, gids):
         wb.save(sel.name)
         wb.close()  # 必须先关 workbook,Windows 上文件句柄才释放,否则下方 unlink 失败
         run_dir = _workflow_dir() / "runs" / f"bitable_export_{time.strftime('%Y%m%d_%H%M%S')}" / mkt.lower()
+        # 子进程 stdout 强制 utf-8(Windows 控制台默认 GBK,不解码 utf-8 中文会变乱码,
+        # 下方正则匹配不到「上架表格:」路径 → 误判出表失败)
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
         proc = subprocess.run(
             [sys.executable, "tools/export_platform_to_staging.py",
              "--market", mkt, "--selected-file", sel.name,
              "--run-dir", str(run_dir)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            cwd=str(BASE_DIR), timeout=420)
+            cwd=str(BASE_DIR), timeout=420, env=env)
     finally:
         try:
             os.unlink(sel.name)
@@ -400,9 +403,18 @@ def _process_group(mkt: str, rows):
     # 4) 审图 + RAG 规则
     _set_rows(rows, ST_QC)
     review_res = _run_review(mkt, tables)
+    # 审图生成 *_zhfiltered.xlsx(已剔除无可用图的阻塞行)时,「仅通过审图OK」用它;
+    # 判定不看 agent 回传,直接 glob 源表同目录 —— 确定性,不依赖解析。
+    filtered_tables = []
+    for t in tables:
+        cand = os.path.join(os.path.dirname(t),
+                            os.path.splitext(os.path.basename(t))[0] + "_zhfiltered.xlsx")
+        if os.path.isfile(cand):
+            filtered_tables.append(cand)
+    tables_ok = filtered_tables or tables
     # 5) 审批卡(按钮回调走现有状态机;通过后 CDP 上架)
     params = {"market": mkt, "mode": "upload", "target": len(gids),
-              "tables": tables,
+              "tables": tables, "tables_ok": tables_ok,
               "run_dir": os.path.dirname(os.path.dirname(tables[0])) if tables else "",
               "note": f"多维表格选品({len(gids)}件)",
               "source": "bitable"}
@@ -428,18 +440,55 @@ def _monitor(run_id: str, rows):
             _set_rows(rows, ST_REJECTED, remark="review_only 模式,未上架")
             return
         if st.get("upload_status") == "done":
-            _write_result(rows, st.get("upload_result") or {})
+            # 实际上传的表(transition 已按 decision 选:approve_ok→过滤副本,
+            # approve_all→原表)。从 seller_sku 前缀解析商品ID集合,回写时
+            # 只把集合内的商品行标「已上架」;被审图剔除(不在集合)的行不掺假。
+            up_tables = (st.get("params") or {}).get("tables") or []
+            gids = _uploaded_gids(up_tables)
+            _write_result(rows, st.get("upload_result") or {}, uploaded_gids=gids)
             return
         time.sleep(5)
     _set_rows(rows, ST_FAIL, failure="等待审批/上架超时(>16分钟)")
 
 
-def _write_result(rows, result):
+def _uploaded_gids(tables):
+    """从实际上传表提取商品ID集合(seller_sku 列,格式 PDD-PH-<商品ID>-<时间戳>)。
+
+    解析失败返回 None —— 调用方据此退化为整批标注(不误杀整批)。"""
+    import openpyxl
+    gids = set()
+    try:
+        for t in (tables or []):
+            wb = openpyxl.load_workbook(t, read_only=True)
+            ws = wb[wb.sheetnames[0]]
+            header = [c.value for c in next(ws.iter_rows(max_row=1))]
+            sku_idx = header.index("seller_sku") if "seller_sku" in header else None
+            if sku_idx is None:
+                wb.close()
+                continue
+            for row in ws.iter_rows(min_row=6, values_only=True):
+                sku = str(row[sku_idx] or "")
+                m = re.match(r"[A-Z]+-(?:PH|TH|VN)-(\d{8,})-", sku)
+                if m:
+                    gids.add(m.group(1))
+            wb.close()
+    except Exception as exc:
+        print(f"[bitable] 解析实际上传商品ID失败: {exc}", flush=True)
+        return None
+    return gids
+
+
+def _write_result(rows, result, uploaded_gids=None):
     """上架完成后回写:真实 ok/fail,不粉饰。
 
     卖家后台只给批次级成功/失败件数,无法逐件定位失败款 → 成功行写「已上架」
     并写 上架时间(完成时刻),有失败时在「备注」如实写批次总数(详情见群结果卡),
     不编造逐件状态。上架链接只在结果里真有时才写,没有就不写。
+
+    uploaded_gids: 实际上传表里的商品ID集合(审图过滤副本或原表)。非 None 时,
+    只把集合内的商品行标「已上架」;不在集合的行 = 被审图剔除未实际上传,
+    标「上架失败」并如实写原因 —— 杜绝「整批 16 行全标已上架、实际只传 7 件」
+    的假状态。None(解析失败)时退化为整批按 ok/fail 标注。
     """
     result = result or {}
     if result.get("ok") is False:
@@ -451,28 +500,26 @@ def _write_result(rows, result):
     fail = int(sr.get("fail") or 0)
     now_ms = int(time.time() * 1000)
     url = str(sr.get("url") or "").strip()
-    if fail > 0:
-        records = [{"record_id": r["record_id"],
-                    "fields": {"状态": ST_DONE if ok else ST_FAIL,
-                               "上架时间": now_ms,
-                               "备注": f"批次成功{ok}件/失败{fail}件,详情见群结果卡"}}
-                   for r in rows]
+    remark_batch = f"批次成功{ok}件/失败{fail}件,详情见群结果卡" if fail > 0 else ""
+
+    records = []
+    for r in rows:
+        gid = _row_goods_id(r)
+        if uploaded_gids is not None and (not gid or gid not in uploaded_gids):
+            # 该商品未进入实际上传表(审图剔除/无可用图),不标已上架
+            records.append({"record_id": r["record_id"],
+                            "fields": {"状态": ST_FAIL, "上架时间": now_ms,
+                                       "失败原因": "审图剔除未上传(无可用图),未实际上架"}})
+            continue
+        fields = {"状态": ST_DONE if ok else ST_FAIL, "上架时间": now_ms}
+        if remark_batch:
+            fields["备注"] = remark_batch
         if url:
-            for rec in records:
-                rec["fields"]["上架链接"] = url
-        try:
-            bitable.batch_update(records)
-        except Exception as exc:
-            print(f"[bitable] 状态回写失败({ST_DONE if ok else ST_FAIL}): {exc}",
-                  flush=True)
+            fields["上架链接"] = url
+        records.append({"record_id": r["record_id"], "fields": fields})
+    if not records:
         return
-    records = [{"record_id": r["record_id"],
-                "fields": {"状态": ST_DONE, "上架时间": now_ms}}
-               for r in rows]
-    if url:
-        for rec in records:
-            rec["fields"]["上架链接"] = url
     try:
         bitable.batch_update(records)
     except Exception as exc:
-        print(f"[bitable] 状态回写失败({ST_DONE}): {exc}", flush=True)
+        print(f"[bitable] 状态回写失败: {exc}", flush=True)

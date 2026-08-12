@@ -51,6 +51,9 @@ CATEGORY_OPTIONS = ["Hair Accessory", "Necklace", "Bracelet", "Earrings",
 IMAGE_COLUMNS = [f"图{i}" for i in range(1, 10)]
 SKU_DETAIL_FIELD = "SKU明细"
 PICK_MAIN_IMAGE_FIELD = "主图图片"
+# select_upload 新建行写入批次号(如 sel_20260813_153000),轮询按批处理,
+# 避免把表里残留的旧「待上架」行整批卷进来混批。
+BATCH_FIELD = "任务批次"
 
 # 进程内 URL→file_token 缓存: 同商品多站点行 / 多次操作复用,避免重复上传
 _IMAGE_TOKEN_CACHE: dict[str, str] = {}
@@ -203,10 +206,22 @@ def pickup_pending(lock_from="待上架", lock_to="处理中", page_size=20,
 
     翻锁必须在任何慢操作（制表/审图/上架）之前完成 —— 翻完锁，下次轮询按
     lock_from 查就查不到，天然防重复。返回翻完锁的行列表。
+
+    批次隔离:select_upload 新建行带「任务批次」;若表里存在带任务批次的待上架
+    行,只捡其中批次号最新的那批(即刚 select 的行),不把表里残留的旧待上架行
+    整批卷进来混批。表里手动标「待上架」的行(无任务批次)仍会正常被捡。
     """
     rows = list_records([("状态", "is", lock_from)], page_size=page_size)
     if not rows:
         return []
+    batched = [r for r in rows
+               if str((r.get("fields") or {}).get(BATCH_FIELD) or "").strip()]
+    if batched:
+        # 只捡最新批次(任务批次按时间字符串排序,最新最大)
+        latest = max(str((r.get("fields") or {}).get(BATCH_FIELD) or "").strip()
+                     for r in batched)
+        rows = [r for r in rows
+                if str((r.get("fields") or {}).get(BATCH_FIELD) or "").strip() == latest]
     now_ms = int(time.time() * 1000)
     batch_update([{"record_id": r["record_id"],
                    "fields": {"状态": lock_to, lock_field: now_ms}}
@@ -314,11 +329,12 @@ def _ensure_columns(table_id, specs):
 
 
 def ensure_listing_image_columns():
-    """上架表(表B)建 图1~图9 附件字段 + SKU明细 文本字段(幂等)。"""
+    """上架表(表B)建 图1~图9 附件字段 + SKU明细 文本字段 + 任务批次(幂等)。"""
     _app_token, _pick_tid, listing_tid = _tokens()
     return _ensure_columns(listing_tid,
                            [{"field_name": n, "type": 17} for n in IMAGE_COLUMNS]
-                           + [{"field_name": SKU_DETAIL_FIELD, "type": 1}])
+                           + [{"field_name": SKU_DETAIL_FIELD, "type": 1},
+                              {"field_name": BATCH_FIELD, "type": 1}])
 
 
 def ensure_pick_visual_columns():
@@ -469,7 +485,7 @@ def self_check():
     out.append((True, "-- 上架情况表(表B) --"))
     _check_table_fields(out, listing_tid, [
         "SPU", "商品ID", "标题(中文)", "分类", "成本价(CNY)", "店铺站点", "状态",
-        "锁定时间", "上架时间", "上架链接", "失败原因", "备注",
+        "锁定时间", "上架时间", "上架链接", "失败原因", "备注", BATCH_FIELD,
     ] + IMAGE_COLUMNS + [SKU_DETAIL_FIELD])
     _check_single_select(out, listing_tid, "状态", LISTING_STATUSES)
     _check_single_select(out, listing_tid, "店铺站点", SITE_OPTIONS)
