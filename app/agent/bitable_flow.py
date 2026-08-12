@@ -428,8 +428,9 @@ def _process_group(mkt: str, rows):
 
 def _monitor(run_id: str, rows):
     """等审批卡被点(通过→上架跑完;驳回→中止),把最终结果写回表。
-    阻塞最多 ~16 分钟(审批等待 + 上传 15 分钟上限)。"""
-    deadline = time.time() + 1000
+    阻塞最长 60 分钟:审批等待不可控(用户可能隔很久才点卡,实测 16 分钟就超时误标失败
+    并丢掉点卡后的上传结果),上传本身 15 分钟上限。60 分钟覆盖两者,不误杀审批中的批次。"""
+    deadline = time.time() + 3600
     while time.time() < deadline:
         st = approval.get(run_id) or {}
         status = st.get("status")
