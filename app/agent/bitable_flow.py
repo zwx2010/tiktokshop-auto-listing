@@ -20,6 +20,8 @@ import time
 import uuid
 from pathlib import Path
 
+from sqlalchemy.orm import selectinload
+
 from ..config import BASE_DIR
 from ..database import SessionLocal
 from ..feishu import bitable, client as fc
@@ -130,10 +132,11 @@ def _ensure_products(rows):
             gid = _row_goods_id(r)
             p = None
             if spu:
-                p = db.query(Product).filter(Product.spu == spu).first()
+                p = (db.query(Product).options(selectinload(Product.skus))
+                     .filter(Product.spu == spu).first())
             if p is None and gid:
-                p = db.query(Product).filter(
-                    Product.source_goods_id == gid).first()
+                p = (db.query(Product).options(selectinload(Product.skus))
+                     .filter(Product.source_goods_id == gid).first())
             if p is None:
                 _set_rows([r], ST_FAIL,
                           failure=f"SPU/商品ID 不在采集库(spu={spu or '-'} "
@@ -238,6 +241,73 @@ def _ensure_copy(products, mkt: str):
         db.close()
 
 
+def _ensure_styles_en(products, mkt: str):
+    """把组内所有 SKU 的 1688 中文款式翻译成英文,写回 sku.style_en。
+
+    upload 表的「次要销售变体值」不能含中文;文案生成(_ensure_copy)只在缺文案时
+    顺带返回 styles_en,已 ready 文案的商品款式没人翻 → 这里兜底:收集组内所有
+    未翻译的中文 style,一次 claude 桥批量翻译(真实翻译,不造假),按原样落库。
+    已有 style_en 的不重复翻。
+    """
+    import re as _re
+    from ..models import ProductSku
+
+    def _is_cn(s: str) -> bool:
+        return bool(_re.search(r"[一-鿿]", s or ""))
+
+    db = SessionLocal()
+    try:
+        pending: dict[str, str] = {}  # 中文style -> 原文(按原样翻一次,去重)
+        for p in products.values():
+            for sku in p.skus:
+                st = (sku.style or "").strip()
+                if st and not (sku.style_en or "").strip() and _is_cn(st):
+                    pending.setdefault(st, st)
+        if not pending:
+            return
+        terms = list(pending)
+        prompt = (
+            "你是 TikTok Shop 配饰类目本地化专员。把下面的中文款式名逐条翻译成"
+            "英文买家能看懂的款式词,只译款式本身,不增删不释义、不编材质规格,"
+            "不要给整句。逐条一一对应。\n"
+            + "\n".join(f"{i}. {t}" for i, t in enumerate(terms)) + "\n"
+            "只输出 JSON: {\"items\": [{\"cn\": \"中文原文\", \"en\": \"英文译文\"}]}"
+        )
+        sr = _run_claude_style(prompt, timeout_s=max(60, 30 * len(terms)))
+        items = (sr or {}).get("items") if isinstance(sr, dict) else None
+        if not isinstance(items, list):
+            print(f"[bitable] style 英译未返回合法 JSON({len(terms)} 条),跳过本组", flush=True)
+            return
+        en_map = {}
+        for it in items:
+            if isinstance(it, dict):
+                cn = str(it.get("cn") or "").strip()
+                en = str(it.get("en") or "").strip()
+                if cn and en:
+                    en_map[cn] = en
+        if not en_map:
+            return
+        # 游离对象不能直接改(见 _ensure_copy 注释):在本 session 重查再写
+        hit = 0
+        for sku in (db.query(ProductSku)
+                    .filter(ProductSku.style.in_(list(en_map))).all()):
+            en = en_map.get((sku.style or "").strip())
+            if en and (sku.style_en or "") != en:
+                sku.style_en = en
+                hit += 1
+        if hit:
+            db.commit()
+            print(f"[bitable] 款式英译完成: {hit}/{len(terms)} 条", flush=True)
+    finally:
+        db.close()
+
+
+def _run_claude_style(prompt: str, timeout_s=180):
+    """样式翻译专用 claude 桥调用(复用 bridge,单独封装避免循环依赖)。"""
+    from scripts.regenerate_listing_copy import _run_claude
+    return _run_claude(prompt, timeout_s=timeout_s)
+
+
 # ---------------------------------------------------------------- 出表/审图
 def _export_tables(mkt: str, gids):
     """表里选中的商品ID → 临时选品表 → export 人工选品路径 → TikTok 上架表 xlsx。
@@ -315,6 +385,8 @@ def _process_group(mkt: str, rows):
     products, rows = _ensure_products(rows)
     if not rows:
         return  # 全部不在采集库,已标失败,不再跑流水线
+    # 1.5) 中文款式 → 英文(upload 表变体值不能含汉字;缺 style_en 的兜底翻译)
+    _ensure_styles_en(products, mkt)
     gids = [g for g in (_row_goods_id(r) for r in rows) if g]
     if not gids:
         raise FlowError("选中的行没有「商品ID」字段,无法出表")

@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy.orm import selectinload  # noqa: E402
 
 from app.database import SessionLocal  # noqa: E402
-from app.models import Account, Listing, Product  # noqa: E402
+from app.models import Account, Listing, Product, ProductSku  # noqa: E402
 
 DEFAULT_STORE = "RoseSeek"
 _LANGS = {"PH": "English", "TH": "Thai", "VN": "Vietnamese"}
@@ -164,7 +164,9 @@ def _llm_batch_prompt(entries: list[dict], store: str, rules_text: str) -> str:
         "必须以 ' Style {该商品的style_code}' 结尾——用商品清单里自己的 style_code，"
         "范例里的 Style 编号属于别的商品，绝对不要照抄。"
         "描述如实描述颜色/款式/日常使用场景，禁止编造材质、克重、规格、销量、承诺。\n"
-        "只输出 JSON：{\"items\": [{\"goods_id\": \"...\", "
+        "商品清单里的「款式」是各 SKU 的中文款式名(以 / 分隔)，请逐条翻译成英文"
+        "放进 styles_en 数组，数量与顺序严格一一对应；只译款式词本身，不增删不释义。\n"
+        "只输出 JSON：{\"items\": [{\"goods_id\": \"...\", \"styles_en\": [\"...\"], "
         "\"PH\": {\"title\": \"...\", \"description\": \"...\"}, "
         "\"TH\": {...}, \"VN\": {...}}]}"
     )
@@ -301,6 +303,24 @@ def main() -> int:
                         db.rollback()
                         done["error"] += 1
                         print(f"  [写库失败] {e['goods_id']}/{mkt}: {exc}", flush=True)
+                # LLM 顺带返回 styles_en(中文款式→英文),按 styles_list 顺序回写 SKU
+                styles_en = (it or {}).get("styles_en") or []
+                if isinstance(styles_en, list) and e.get("styles_list"):
+                    cn_to_en = {c.strip(): en.strip()
+                                for c, en in zip(e["styles_list"], styles_en)
+                                if c and c.strip() and en and en.strip()}
+                    if cn_to_en:
+                        try:
+                            for sku in (db.query(ProductSku)
+                                        .filter(ProductSku.product_id == e["product_id"])
+                                        .all()):
+                                en = cn_to_en.get((sku.style or "").strip())
+                                if en and (sku.style_en or "") != en:
+                                    sku.style_en = en
+                            db.commit()
+                        except Exception as exc:
+                            db.rollback()
+                            print(f"  [写style_en失败] {e['goods_id']}: {exc}", flush=True)
             batch = []
 
         for d in by_prod.values():
@@ -312,11 +332,13 @@ def main() -> int:
             colors, styles = _sku_attrs(prod)
             entry = {
                 "goods_id": gid,
+                "product_id": prod.id,
                 "style_code": str(gid)[-4:],
                 "title_cn": prod.title_cn,
                 "category": prod.category,
                 "colors": colors,
                 "styles": styles,
+                "styles_list": [s.style for s in prod.skus if s.style],  # 与 styles 分隔串同序
                 "markets": [],
                 "examples": {},
                 "listing_refs": [],

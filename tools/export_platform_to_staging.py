@@ -167,6 +167,17 @@ def build_style_map(codex_row: dict | None) -> dict[str, str]:
     return dict(zip(cn, en))
 
 
+def resolve_style_en(sku, style_map: dict[str, str]) -> str:
+    """SKU 上传用英文款式:优先库内 style_en(本地化链路落库),其次 codex 映射,
+    都没有才原样透传(此时若为中文,是还没被本地化的漏网款式)。"""
+    if not (sku.style or "").strip():
+        return ""
+    en = (getattr(sku, "style_en", "") or "").strip()
+    if en:
+        return en
+    return style_map.get(sku.style, sku.style)
+
+
 def select_products(
     products: list[Product], min_cost: float, max_cost: float, count: int
 ) -> list[Product]:
@@ -229,7 +240,7 @@ def make_row(
     """组装 46 列的一行。定价每 SKU 用 price_skus 重算。"""
     pricing = price_skus(mkt, sku.cost_cny, p.weight_g or DEFAULT_WEIGHT_G)
     # style 透传不截断；超 MAX_STYLE_LEN 的 SKU 由调用方在 append 前整件跳过（见 main）
-    style_en = style_map.get(sku.style, sku.style) if sku.style else ""
+    style_en = resolve_style_en(sku, style_map)
     category = p.category or cleaning.infer_category(p.title_cn)
     images = cleaning.clean_images(p.image_urls)
     low = min(sku_costs) if sku_costs else 0.0
@@ -299,16 +310,18 @@ def write_staging(rows: list[dict], path: Path) -> None:
         w.writerows(rows)
 
 
-def run_fill(fill_ps1: Path, template_path: Path, csv_path: Path, out_path: Path) -> None:
+def run_fill(fill_ps1: Path, template_path: Path, csv_path: Path, out_path: Path,
+             english: bool = False) -> None:
     # 强制 powershell 以 UTF-8 输出,并让 subprocess 用 UTF-8 容错解码。
     # 否则在部分环境(如 claude -p 子进程)下 text=True 走 GBK 解码,
     # 遇到非法字节 reader 线程直接崩,result.stdout 变 None。
+    lang_switch = " -English" if english else ""
     cmd = [
         "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-Command",
         "$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
-        "& '{0}' -TemplatePath '{1}' -StagingCsvPath '{2}' -OutputPath '{3}'".format(
-            fill_ps1, template_path, csv_path, out_path
+        "& '{0}' -TemplatePath '{1}' -StagingCsvPath '{2}' -OutputPath '{3}'{4}".format(
+            fill_ps1, template_path, csv_path, out_path, lang_switch
         ),
     ]
     print("调用 PowerShell 填表...")
@@ -348,7 +361,16 @@ def main() -> None:
 
     mkt = args.market.upper()
     wf = resolve_workflow_dir(args)
-    template_path = wf / "templates" / (args.template or f"accessories_{args.market.lower()}.xlsx")
+    # 英文模板优先:有 accessories_{market}_en.xlsx 就用英文版(上传表彻底无汉字);
+    # 没有就回退中文模板。显式 --template 时不自动切换。
+    if args.template:
+        template_path = wf / "templates" / args.template
+        english = "_en." in args.template.lower()
+    else:
+        base = f"accessories_{args.market.lower()}"
+        en_path = wf / "templates" / f"{base}_en.xlsx"
+        template_path = en_path if en_path.exists() else wf / "templates" / f"{base}.xlsx"
+        english = en_path.exists()
     fill_ps1 = wf / "tools" / "Fill-TikTokTemplate.ps1"
     codex_path = wf / "runs" / "smoke_01" / args.market.lower() / "codex_listing_copy.csv"
 
@@ -411,7 +433,7 @@ def main() -> None:
                 continue
             # 上传规格:style 映射的 property_value 不得超过 50 字符(TikTok 真拒收),
             # 超长整件跳过,不截断 —— 与 RAG upload_learning 规则一致
-            style_en = style_map.get(sku.style, sku.style) if sku.style else ""
+            style_en = resolve_style_en(sku, style_map)
             if len(style_en) > MAX_STYLE_LEN:
                 skipped_style += 1
                 print(f"[警告] style 超{MAX_STYLE_LEN}字符已跳过: {sku.supplier_sku_id}  "
@@ -433,7 +455,7 @@ def main() -> None:
 
     if not args.skip_fill:
         out_path = run_dir / f"{mkt}_upload_top{row_products}.xlsx"
-        run_fill(fill_ps1, template_path, csv_path, out_path)
+        run_fill(fill_ps1, template_path, csv_path, out_path, english=english)
         print(f"[完成] 上架表格: {out_path}")
         print(f"   含 {row_products} 件商品 / {len(rows)} 行 SKU")
 

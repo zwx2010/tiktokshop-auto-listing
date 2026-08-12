@@ -88,6 +88,7 @@ class ProductSku(Base):
     product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("products.id", ondelete="CASCADE"))
     color: Mapped[str] = mapped_column(String(64), default="Default")
     style: Mapped[str] = mapped_column(String(64), default="")
+    style_en: Mapped[str] = mapped_column(String(128), default="")  # 1688 中文款式 → 英文(上传表用)
     size: Mapped[str] = mapped_column(String(32), default="One Size")
     supplier_sku_id: Mapped[str] = mapped_column(String(64), default="")
     cost_cny: Mapped[float] = mapped_column(default=0.0)
