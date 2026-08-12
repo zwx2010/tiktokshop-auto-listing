@@ -91,15 +91,18 @@ _STAGE_TEMPLATES = {
         "skill": "tiktok-review",
         "prompt": (
             "先实际执行(Bash),直接跑下面命令,不要解释: "
-            "python \"{pkg}/tools/Review-ProductImages.py\" {tables} 2>&1; "
             "cd {platform} && python -m app.rag.cli check --title \"{sample_title}\" "
             "--cost {cost} --market {market} 2>&1; "
-            "cd {platform} && python -m app.rag.cli check-table \"{tables}\" 2>&1。"
+            "cd {platform} && python -m app.rag.cli check-table \"{tables}\" 2>&1; "
+            "python \"{pkg}/tools/Review-ProductImages.py\" {tables} --qwen-zh --fix-zh --json 2>&1。"
             "命令会读写项目外目录,属正常,你的权限已全部放行。"
-            "把真实 stdout 原样放进返回 JSON 的 detail;审图 FAIL 件数填 image_fail,RAG 命中填 rule_fail/hits,"
+            "最后一条命令(审图)会在 stdout 末尾打印一个 JSON:读它的 image_fail 填 image_fail"
+            "(过滤后仍一张可用图都不剩的阻塞行数,即闸门口径),汉字过滤张数填 zh_flagged,"
+            "过滤副本路径列表填 filtered_tables(没生成就填 []);RAG 命中填 rule_fail/hits,"
             "check-table 的 fails 数填 table_fail(超长属性值等上传会被拒的坏表)。"
-            "只输出 JSON: {\"stage\":\"review\",\"tables\":[],"
-            "\"image_fail\":0,\"rule_fail\":0,\"table_fail\":0,\"hits\":[],"
+            "把真实 stdout 原样放进返回 JSON 的 detail。"
+            "只输出 JSON: {\"stage\":\"review\",\"tables\":[],\"filtered_tables\":[],"
+            "\"image_fail\":0,\"rule_fail\":0,\"table_fail\":0,\"zh_flagged\":0,\"hits\":[],"
             "\"summary\":\"一句话\",\"detail\":\"\"}"
         ),
     },

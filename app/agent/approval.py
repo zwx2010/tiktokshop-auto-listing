@@ -675,13 +675,23 @@ def handle_instruction(text):
          "cost": cost}
     stages["review"] = tasks.run_stage("review", p, timeout_s=timeouts.get("review", 420))
 
+    # 审图生成了 *_zhfiltered.xlsx(去掉含汉字/尺寸FAIL图的过滤副本)时,上架用过滤副本。
+    # 判定不看 agent 回传,直接 glob 源表同目录 —— 确定性,不依赖解析。
+    filtered_tables = []
+    for t in tables:
+        cand = os.path.join(os.path.dirname(t),
+                            os.path.splitext(os.path.basename(t))[0] + "_zhfiltered.xlsx")
+        if os.path.isfile(cand):
+            filtered_tables.append(cand)
+    upload_tables = filtered_tables or tables
+
     # 候选数从真表数出去重商品数(表按 SKU 铺行,product_name 重复)
     candidates, _ = (_count_products(tables[0]) if tables else (0, 0))
 
     with _lock:
         st = _STATE.get(run_id)
         if st:
-            st["params"] = {**st["params"], "tables": tables, "run_dir": run_dir}
+            st["params"] = {**st["params"], "tables": upload_tables, "run_dir": run_dir}
             st["candidates"] = candidates
             st["stages"] = {k: _stage_dict(v) for k, v in stages.items()}
 
@@ -841,6 +851,13 @@ def build_card(run_id, stages, candidates=None):
                ("违禁命中", str(rule_fail)),
                ("表规FAIL", str(table_fail)),
                ("run_id", run_id)]
+    # 汉字图被自动过滤的件数如实标注;上架用过滤副本时提示,避免运营以为上的是原表
+    zh_flagged = int(review.get("zh_flagged") or 0)
+    if zh_flagged:
+        fields.append(("汉字图过滤", f"{zh_flagged} 张(审图已移除,只留商品图)"))
+    filtered = [str(t) for t in (review.get("filtered_tables") or [])]
+    if filtered:
+        fields.append(("上架表", "已用过滤副本 *_zhfiltered.xlsx"))
     for n in notes:
         fields.append(("⚠️", n))
     return {
