@@ -2,6 +2,29 @@
 
 用 FastAPI + SQLite 串起来的 TikTok Shop 多账号运营工具：1688 采集 → 清洗定价 → 三语文案 → 审核 → CDP 真实上架 → 飞书机器人审批。数据全部真实，不含任何演示/模拟成分。
 
+## 架构流程
+
+运营在飞书群里发一句自然语言指令，流水线自动跑完全程，直到商品真实发布到 TikTok Shop：
+
+```mermaid
+flowchart LR
+    A[运营在飞书群发指令<br/>"上架一批 PH 站配饰"] --> B{Claude Agent<br/>意图解析}
+    B -->|采集指令| C[1688 CDP 采集<br/>Edge 调试端口抓取]
+    B -->|上架指令| D[采集入库]
+    C --> D
+    D --> E[清洗 + 定价<br/>去重 / 变体值≤50字符 / 真实成本]
+    E --> F[制表<br/>选品表 → 三站上架表]
+    F --> G[qwen-vl 审图<br/>尺寸检查 / 汉字图过滤]
+    G --> H[RAG 三语文案<br/>规则层 + 向量检索 + 真实范例 few-shot]
+    H --> I[飞书审批卡<br/>通过全部 / 仅通过审图OK / 驳回]
+    I -->|通过| J[CDP 实际上架<br/>真实发布 TikTok Shop]
+    J --> K[结果回写<br/>素材库 / 状态机 / 人工兜底]
+    I -->|驳回| L[人工补充修改]
+    L --> H
+```
+
+> ⚠️ **免责声明**：本项目涉及对 1688 / TikTok Shop 等第三方平台页面的自动化操作，仅用于个人学习与自研工具，账号风控风险由使用者自行承担。
+
 ## 一键启动
 
 双击 **`一键启动.bat`**，菜单默认回车即启动服务器：
@@ -82,8 +105,8 @@ set DATABASE_URL=mysql+pymysql://user:pass@localhost:3306/tiktok_platform
 
 Schema 见 [`docs/02_database_schema.md`](docs/02_database_schema.md)，部署要点见 [`docs/新机器部署.md`](docs/新机器部署.md)。
 
-## 相关外部资产
+## 相关说明
 
-- 采集/定价/文案工作流：`../tk自动化工作流/`（LilyCoco 自动化工作流，smoke_01 真实 run）
-- 本地化文案包：`../RoseSeek_TikTokShop_AI_Localized_20260809/`（1688 accessories 3site 各 run）
-- 上架依赖机器环境：Edge 调试端口 9223（采集）、9344（上架）、cpolar（飞书隧道）
+- 采集 / 定价 / 文案由自动化工作流包驱动（1688 accessories 多站点真实 run），配合本地化文案包产出三语文案。
+- 上架依赖机器环境：Edge 调试端口 9223（采集）、9344（上架）、cpolar（飞书隧道）。
+- 敏感数据不随仓库分发：真实商品库、飞书应用密钥见「数据诚实说明」与 `config/*.local.json`，需要自行准备。
