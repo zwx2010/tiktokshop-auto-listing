@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -37,6 +38,10 @@ ST_UPLOADING = "上架中"
 ST_DONE = "已上架"
 ST_FAIL = "上架失败"
 ST_REJECTED = "已驳回"
+# 批次级结果含失败件(如 1 成功 1 precheck 失败)、无法逐件定位成功/失败款时,
+# 集合内行标「上架待核对」——既不谎报成功(失败的件被盖已上架),也不误伤成功件
+# (全标上架失败)。运营据群结果卡/后台核对后人工改状态。
+ST_NEEDS_CHECK = "上架待核对"
 
 # 商品ID 规则:与全系统 goods_id 一致(8 位以上纯数字)
 _GID_RE = re.compile(r"\d{8,}")
@@ -74,6 +79,12 @@ def _row_goods_id(row) -> str:
 def _row_spu(row) -> str:
     f = row.get("fields") or {}
     v = f.get("SPU")
+    return str(v).strip() if v not in (None, "") else ""
+
+
+def _row_batch_id(row) -> str:
+    f = row.get("fields") or {}
+    v = f.get(bitable.BATCH_FIELD) or f.get("任务批次")
     return str(v).strip() if v not in (None, "") else ""
 
 
@@ -192,7 +203,12 @@ def _ensure_copy(products, mkt: str):
                    .filter(Listing.product_id == p.id,
                            Listing.market_code == mkt.upper()).first())
             if lst and lst.listing_status == "ready" and lst.title and lst.description:
-                continue
+                # 已 ready 也重检:规则库更新后旧文案可能已违规(新禁品牌词/超长),
+                # 校验不过 → 走重新生成,不放过带违规文案的 ready 文案
+                ok, _reason = _validate_copy(lst.title, lst.description)
+                if ok:
+                    continue
+                print(f"[copy] 商品 {p.source_goods_id} ready 文案未通过重检,重新生成", flush=True)
             if lst is None:
                 lst = Listing(product_id=p.id, account_id=acc_id,
                               market_code=mkt.upper(),
@@ -412,6 +428,9 @@ def _process_group(mkt: str, rows):
         if os.path.isfile(cand):
             filtered_tables.append(cand)
     tables_ok = filtered_tables or tables
+    # 4.5) 审图剔除(图片问题)自动补位:从采集库补失败件数,只补一轮,库空发卡片提示。
+    #      被剔行仍由 _write_result 标「上架失败」;补位行是独立新批次,下一轮轮询自动跑。
+    _maybe_refill_after_review(mkt, rows, products, tables_ok, gids)
     # 5) 审批卡(按钮回调走现有状态机;通过后 CDP 上架)
     params = {"market": mkt, "mode": "upload", "target": len(gids),
               "tables": tables, "tables_ok": tables_ok,
@@ -424,6 +443,52 @@ def _process_group(mkt: str, rows):
     sent = fc.deliver_card(fc.approval_card(**card_data))
     _set_rows(rows, ST_APPROVE)
     _monitor(run_id, rows)
+
+
+def _maybe_refill_after_review(mkt, rows, products, tables_ok, gids):
+    """审图剔除(图片问题)后自动补位:从采集库补失败件数,只补一轮,库空发卡片。
+
+    被剔行仍由 _write_result 标「上架失败(审图剔除未上传)」,这里只负责:
+      - 非补位批次:从库里按「被剔行品类+成本窗口」挑 shortfall 件,生成表B「待上架」
+        补位行(batch=refill_*,下一轮轮询自动跑),并如实发结果卡(补足/部分/库空);
+      - 补位批次(refill_*)再被剔除:不再补位,发灰卡「已停止补位」,防死循环。
+    卡片一律 buttons=[] 只提示不回调。
+    """
+    passed = _uploaded_gids(tables_ok)
+    if passed is None:
+        print("[bitable] 补位判定:解析审图后表商品ID失败,跳过补位", flush=True)
+        return
+    dropped = sorted({str(g) for g in gids} - {str(g) for g in passed})
+    shortfall = len(dropped)
+    if shortfall <= 0:
+        return  # 无剔除,不补位
+
+    titles = [str(getattr(products.get(g), "title_cn", "") or g) for g in dropped]
+
+    def _card(color, result, extra=()):
+        fields = [("市场", str(mkt).upper()), ("结果", result),
+                  ("被剔商品", "、".join(titles[:8]))] + list(extra)
+        fc.deliver_card(fc.approval_card(title="上架机器人", color=color,
+                                         fields=fields, buttons=[]))
+
+    if any(_row_batch_id(r).startswith("refill_") for r in rows):
+        _card("grey", f"补位批次仍有 {shortfall} 件被审图剔除,已停止补位(补位只做一轮)")
+        return
+
+    # 补位选品范围 = 被剔行同品类(select_upload 存的分类已是英文 category)
+    cat_by_gid = {_row_goods_id(r): str((r.get("fields") or {}).get("分类") or "").strip()
+                  for r in rows}
+    en_cat = next((cat_by_gid.get(g, "") for g in dropped if cat_by_gid.get(g, "")), "")
+    res = approval.create_refill_rows(mkt, en_cat, shortfall, exclude_gids=set(gids))
+    created = res.get("created", 0)
+    scope = f"{en_cat or '全品类'}+成本2-40"
+    if created >= shortfall:
+        _card("blue", f"已从采集库补位 {created} 件(审图剔除{shortfall}件已跳过),新批次自动跑")
+    elif created > 0:
+        _card("orange", f"仅补位 {created}/{shortfall} 件,库里符合条件的商品不足({scope})")
+    else:
+        _card("grey", f"库里没有符合条件的补位商品({scope}),未生成补位任务",
+              extra=[("提示", "先采集入库,或调整成本/品类条件")])
 
 
 def _monitor(run_id: str, rows):
@@ -447,9 +512,39 @@ def _monitor(run_id: str, rows):
             up_tables = (st.get("params") or {}).get("tables") or []
             gids = _uploaded_gids(up_tables)
             _write_result(rows, st.get("upload_result") or {}, uploaded_gids=gids)
+            # 实际上传完成 → 后台把平台库最新真实文案刷进 RAG 语料
+            # (导出写新时间戳目录 → 语料文件集合变化 → 下次检索自动重建索引)
+            _refresh_corpus_after_upload()
             return
         time.sleep(5)
     _set_rows(rows, ST_FAIL, failure="等待审批/上架超时(>16分钟)")
+
+
+def _refresh_corpus_after_upload():
+    """上架完成后自动把平台库真实文案刷进 RAG 语料(后台执行)。
+
+    复用 tools/export_corpus_from_platform 的导出:每次写新时间戳目录,
+    语料文件集合变化 → 下次检索 ensure_index 自动重建向量索引,无需手动跑。
+    后台线程执行,失败只记日志,绝不影响上架结果回写;导出新开子进程,
+    与 _export_tables 同款,不依赖 sys.path 里 tools 包可导入。
+    """
+    def job():
+        try:
+            env = dict(os.environ, PYTHONIOENCODING="utf-8")
+            proc = subprocess.run(
+                [sys.executable, "tools/export_corpus_from_platform.py"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                cwd=str(BASE_DIR), timeout=300, env=env)
+            out = (proc.stdout or "").strip()
+            if proc.returncode == 0:
+                summary = out.splitlines()[-1] if out else "done"
+                print(f"[bitable] 上架完成,自动刷新 RAG 语料: {summary}", flush=True)
+            else:
+                print(f"[bitable] 自动刷新语料脚本退出码 {proc.returncode}: "
+                      f"{((out + (proc.stderr or '')).strip())[-400:]}", flush=True)
+        except Exception as exc:
+            print(f"[bitable] 上架后自动刷新语料失败(不影响上架结果): {exc}", flush=True)
+    threading.Thread(target=job, daemon=True).start()
 
 
 def _uploaded_gids(tables):
@@ -482,14 +577,18 @@ def _uploaded_gids(tables):
 def _write_result(rows, result, uploaded_gids=None):
     """上架完成后回写:真实 ok/fail,不粉饰。
 
-    卖家后台只给批次级成功/失败件数,无法逐件定位失败款 → 成功行写「已上架」
-    并写 上架时间(完成时刻),有失败时在「备注」如实写批次总数(详情见群结果卡),
-    不编造逐件状态。上架链接只在结果里真有时才写,没有就不写。
+    卖家后台只给批次级成功/失败件数,无法逐件定位失败款。三档如实回写:
+      - 批次全成功(fail==0):集合内行写「已上架」+ 上架时间;
+      - 批次含失败件(fail>0):集合内行写「上架待核对」——既不让失败件被盖
+        「已上架」章,也不误伤成功件全标失败;备注如实写批次总数(详情见群结果卡),
+        运营核对后台后人工改状态;
+      - 不在集合的行 = 被审图剔除未实际上传 → 标「上架失败」+ 如实写原因,
+        不写成功时间。
+    上架链接只在结果里真有时才写,没有就不写。
 
     uploaded_gids: 实际上传表里的商品ID集合(审图过滤副本或原表)。非 None 时,
-    只把集合内的商品行标「已上架」;不在集合的行 = 被审图剔除未实际上传,
-    标「上架失败」并如实写原因 —— 杜绝「整批 16 行全标已上架、实际只传 7 件」
-    的假状态。None(解析失败)时退化为整批按 ok/fail 标注。
+    只把集合内的商品行按上两档标注 —— 杜绝「整批 3 行全标已上架、实际只传 2 件
+    且其中 1 件 precheck 失败」的假状态。None(解析失败)时退化为整批按 ok/fail 标注。
     """
     result = result or {}
     if result.get("ok") is False:
@@ -502,15 +601,29 @@ def _write_result(rows, result, uploaded_gids=None):
     now_ms = int(time.time() * 1000)
     url = str(sr.get("url") or "").strip()
     remark_batch = f"批次成功{ok}件/失败{fail}件,详情见群结果卡" if fail > 0 else ""
+    # 批次级含失败件且无法逐件定位成功/失败款 → 集合内行不能盖「已上架」章。
+    # 先确保「上架待核对」选项存在于状态字段,再在下面标给这些行。
+    has_partial_failure = fail > 0
+    if has_partial_failure:
+        bitable.ensure_status_option(ST_NEEDS_CHECK)
 
     records = []
     for r in rows:
         gid = _row_goods_id(r)
         if uploaded_gids is not None and (not gid or gid not in uploaded_gids):
-            # 该商品未进入实际上传表(审图剔除/无可用图),不标已上架
+            # 该商品未进入实际上传表(审图剔除/无可用图),不标已上架,也不写成功时间
             records.append({"record_id": r["record_id"],
-                            "fields": {"状态": ST_FAIL, "上架时间": now_ms,
+                            "fields": {"状态": ST_FAIL,
                                        "失败原因": "审图剔除未上传(无可用图),未实际上架"}})
+            continue
+        if has_partial_failure:
+            # 集合内但批次含失败件:无法确认本件成功还是失败,标待核对(诚实中间态)
+            fields = {"状态": ST_NEEDS_CHECK}
+            if remark_batch:
+                fields["备注"] = remark_batch
+            if url:
+                fields["上架链接"] = url
+            records.append({"record_id": r["record_id"], "fields": fields})
             continue
         fields = {"状态": ST_DONE if ok else ST_FAIL, "上架时间": now_ms}
         if remark_batch:

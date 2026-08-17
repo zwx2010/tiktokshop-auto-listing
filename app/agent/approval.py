@@ -75,6 +75,14 @@ def transition(run_id, decision, trigger_upload=None):
             ok_tables = params.get("tables_ok")
             if ok_tables:
                 params["tables"] = ok_tables
+        # 把最终实际使用的表(approve_ok 时已换成审图过滤副本)写回状态。
+        # _monitor 回写结果时按它解析商品ID集合 —— 被审图剔除、不在集合内的
+        # 行不会被误标「已上架」。此前只改了本地副本传给上传,状态里的 tables
+        # 仍是原始全量表,导致「整批 3 行全标已上架、实际只传 2 件」的假状态。
+        with _lock:
+            st = _STATE.get(run_id)
+            if st:
+                st["params"] = params
         # 真上架耗时数分钟,不在回调里同步等(飞书 3s 超时)。
         # 后台线程跑真实上传,完成后推「上架结果卡」回群。
         _launch_upload(run_id, params)
@@ -550,8 +558,13 @@ def _select_upload(text: str, intent: dict) -> dict:
         site_rows = bitable.list_records([("店铺站点", "is", site)])
         active_spus = {str((r.get("fields") or {}).get("SPU") or "").strip()
                        for r in site_rows if (r.get("fields") or {}).get("SPU")}
+        # 商品ID 去重:手动行可能只填了商品ID没有 SPU,按商品ID再挡一层,
+        # 保证同商品(同店铺)绝不重复写进上架表。
+        active_gids = {str((r.get("fields") or {}).get("商品ID") or "").strip()
+                       for r in site_rows if (r.get("fields") or {}).get("商品ID")}
     except Exception as exc:
         active_spus = set()
+        active_gids = set()
         print(f"[select_upload] 查上架表已有行失败: {exc}", flush=True)
 
     db = SessionLocal()
@@ -594,8 +607,8 @@ def _select_upload(text: str, intent: dict) -> dict:
     for p in products:
         if target and created >= target:
             break
-        if p["spu"] and p["spu"] in active_spus:
-            skipped += 1  # 该 SPU 在目标店铺已有任务在跑,不重复
+        if (p["spu"] and p["spu"] in active_spus) or (p["gid"] and p["gid"] in active_gids):
+            skipped += 1  # 该商品(SPU/商品ID)在目标店铺已有任务在跑,不重复
             continue
         fields = {
             "SPU": p["spu"],
@@ -649,6 +662,123 @@ def _fill_listing_images(jobs):
         except Exception as exc:
             print(f"[select_upload] 填图失败(record={record_id}): {exc}", flush=True)
     print(f"[select_upload] 后台填图/SKU 完成 {done}/{len(jobs)} 行", flush=True)
+
+
+# ---------------------------------------------------------------- 审图剔除后补位
+# 补位选品成本窗口(与 export_platform_to_staging.py 默认 --min-cost/--max-cost 一致)
+_COST_WINDOW = (2.0, 40.0)
+
+
+def _pick_refill_candidates(market, en_cat, count, exclude_gids=()):
+    """审图剔除(图片问题)后,从采集库选补位商品。
+
+    口径:Product.active==True + 同品类 + cost_cny_used ∈ _COST_WINDOW
+        + 排除同店已有行 SPU(active_spus,防重复上架)+ 排除 exclude_gids(本次批次)。
+    返回已物化 dict 列表(照 _select_upload 物化,防 db.close() 后 ORM lazy load 崩溃),
+    按 id 序取 count 件。库空返回空列表,由调用方发卡片提示。
+    """
+    from ..feishu import bitable
+    from ..models import Product
+    from ..database import SessionLocal
+
+    count = int(count or 0)
+    if count <= 0:
+        return []
+    market = str(market or "").strip().lower()
+    site = _SITE_LABEL.get(market, _SITE_LABEL["ph"])
+    en_cat = str(en_cat or "").strip()
+    exclude = {str(g) for g in (exclude_gids or ())}
+    try:
+        site_rows = bitable.list_records([("店铺站点", "is", site)])
+        active_spus = {str((r.get("fields") or {}).get("SPU") or "").strip()
+                       for r in site_rows if (r.get("fields") or {}).get("SPU")}
+        active_gids = {str((r.get("fields") or {}).get("商品ID") or "").strip()
+                       for r in site_rows if (r.get("fields") or {}).get("商品ID")}
+    except Exception as exc:
+        active_spus = set()
+        active_gids = set()
+        print(f"[refill] 查上架表已有行失败: {exc}", flush=True)
+
+    db = SessionLocal()
+    try:
+        q = db.query(Product).filter(Product.active == True).order_by(Product.id)
+        if en_cat:
+            q = q.filter(Product.category == en_cat)
+        out = []
+        for p in q.all():
+            if len(out) >= count:
+                break
+            if not (_COST_WINDOW[0] <= (p.cost_cny_used or 0) <= _COST_WINDOW[1]):
+                continue
+            gid = p.source_goods_id or f"B{p.id}"
+            spu = p.spu or f"SPU{p.id:06d}"
+            if (spu and spu in active_spus) or (gid and gid in active_gids):
+                continue
+            if gid in exclude:
+                continue
+            out.append({
+                "spu": spu,
+                "gid": gid,
+                "title": (p.title_cn or "")[:200],
+                "category": p.category or "",
+                "cost": p.cost_cny_used or 0,
+                "urls": p.image_urls or ([p.main_image_url] if p.main_image_url else []),
+                "skus": [{"color": s.color, "style": s.style,
+                          "supplier_sku_id": s.supplier_sku_id}
+                         for s in p.skus],
+            })
+        return out
+    finally:
+        db.close()
+
+
+def create_refill_rows(market, en_cat, count, exclude_gids=()):
+    """补位:从采集库选 count 件生成表B「待上架」行(新批次 refill_*),轮询会自动捡走。
+
+    只补一轮的触发由调用方(bitable_flow._maybe_refill_after_review)判断;
+    这里库空(0 候选)不建行,返回 {"created": 0},由调用方发卡片提示。
+    返回 {"created": 实际生成行数, "skipped": 写行失败的件数}。
+    """
+    from ..feishu import bitable
+
+    count = int(count or 0)
+    if count <= 0:
+        return {"created": 0, "skipped": 0}
+    cands = _pick_refill_candidates(market, en_cat, count, exclude_gids=exclude_gids)
+    if not cands:
+        print(f"[refill] 无符合条件的补位商品({market},{en_cat or '全品类'}),未建行", flush=True)
+        return {"created": 0, "skipped": 0}
+    market = str(market or "").strip().lower()
+    site = _SITE_LABEL.get(market, _SITE_LABEL["ph"])
+    batch_id = f"refill_{time.strftime('%Y%m%d_%H%M%S')}"
+    created = 0
+    skipped = 0
+    image_jobs = []
+    for p in cands:
+        if created >= count:
+            break
+        fields = {
+            "SPU": p["spu"],
+            "商品ID": p["gid"],
+            "标题(中文)": p["title"],
+            "分类": p["category"],
+            "店铺站点": site,
+            "状态": "待上架",
+            "任务批次": batch_id,
+        }
+        try:
+            record_id = bitable.create_record(fields)
+            if record_id:
+                image_jobs.append((record_id, p["urls"], p["skus"]))
+            created += 1
+        except Exception as exc:
+            print(f"[refill] 写补位行失败 {p['spu']}: {exc}", flush=True)
+            skipped += 1
+    if image_jobs:
+        threading.Thread(target=_fill_listing_images, args=(image_jobs,), daemon=True).start()
+    print(f"[refill] 补位 {created}/{count} 件({site},{en_cat or '全品类'},batch={batch_id})",
+          flush=True)
+    return {"created": created, "skipped": skipped}
 
 
 def handle_instruction(text):
@@ -710,12 +840,22 @@ def handle_instruction(text):
 
     # 采集入库:collect(真采集)→ 确定性桥接脚本写平台库 → 回结果卡(不制表/不审图/不上架)
     if mode == "capture_db":
+        _collect_started = time.time()
         stages["collect"] = tasks.run_stage("collect", p, timeout_s=timeouts.get("collect", 420))
         collect = _stage_dict(stages.get("collect"))
         if _stage_err(stages.get("collect")):
-            # 采集失败不跑桥接(避免误把历史 run 灌进库)
-            stages["bridge_to_db"] = {"ok": False, "stage_result": {},
-                                      "error": "采集未成功,跳过入库"}
+            # 采集失败不直接跳过:claude -p 收尾响应失败(unrecognized_model 等网关偶发)
+            # 不代表采集没完成。找本轮 collect 期间新出现的 1688 run,有真数据就继续入库;
+            # 找不到才判失败(避免把历史 run 灌进库)。
+            rescued_dir = _find_recent_collect_run(after_ts=_collect_started)
+            if rescued_dir:
+                br = _run_bridge_deterministic(rescued_dir, p.get("market", "ph"))
+                if isinstance(br, dict) and isinstance(br.get("stage_result"), dict):
+                    br["stage_result"]["rescued"] = True
+                stages["bridge_to_db"] = br
+            else:
+                stages["bridge_to_db"] = {"ok": False, "stage_result": {},
+                                          "error": "采集未成功,跳过入库"}
         else:
             stages["bridge_to_db"] = _run_bridge_deterministic(
                 str(collect.get("run_dir") or ""), p.get("market", "ph"))
@@ -800,6 +940,47 @@ def _stage_err(stage_res):
     return None
 
 
+def _find_recent_collect_run(after_ts=None, fresh_seconds=1800):
+    """collect 收尾响应失败时的兜底:找本轮 collect 期间新出现的 1688 run 目录。
+
+    claude -p 可能在采集已真实完成(PowerShell 写完 captures/)之后、收尾生成 JSON 时
+    被 deepseek 网关偶发拒绝(unrecognized_model),进程返回非零 → bridge 判失败。
+    此时 run 目录是新鲜的(st_mtime >= after_ts)、采集数据是真实完成的,可以继续入库,
+    避免"采集其实成功却因收尾响应失败被整批丢弃"。
+
+    只认本轮 collect 开始之后新出现的目录(after_ts 过滤),找不到(采集真没跑成)返回 "",
+    不会拿历史 run 兜底灌库。
+    """
+    try:
+        from ..config import BASE_DIR
+        pkg = os.environ.get(
+            "ROSEEK_PKG_DIR",
+            str(BASE_DIR.parent / "RoseSeek_TikTokShop_AI_Localized_20260809"),
+        )
+        base = os.path.join(pkg, "runs")
+        if not os.path.isdir(base):
+            return ""
+        now = time.time()
+        newest = None
+        for name in os.listdir(base):
+            p = os.path.join(base, name)
+            if not (name.startswith("1688_accessories_") and os.path.isdir(p)):
+                continue
+            try:
+                mtime = os.path.getmtime(p)
+            except OSError:
+                continue
+            if after_ts is not None and mtime < after_ts:
+                continue          # 不是本轮 collect 产生的,不碰
+            if now - mtime > fresh_seconds:
+                continue          # 太久没更新,不兜底
+            if newest is None or mtime > newest[1]:
+                newest = (p, mtime)
+        return newest[0] if newest else ""
+    except Exception:
+        return ""
+
+
 def _run_bridge_deterministic(run_dir, market):
     """确定性跑 1688 采集入库脚本(不经 LLM,DB 写入是源头事实)。
 
@@ -864,10 +1045,15 @@ def build_bridge_card(run_id, stages):
             label = "成本过滤"
         fields.insert(-1, (label, str(cost_filtered)))
     notes = []
+    rescued = bool(br.get("rescued"))
     for name, label in (("collect", "采集"), ("bridge_to_db", "入库")):
         err = _stage_err(stages.get(name))
         if err:
-            notes.append(f"{label}失败:{str(err)[:60]}")
+            if name == "collect" and rescued:
+                # 兜底入库:采集数据真实完成,只是收尾响应失败,不标"采集失败"
+                notes.append("采集收尾响应异常,已按新鲜采集数据入库")
+            else:
+                notes.append(f"{label}失败:{str(err)[:60]}")
     if errs:
         notes.append("入库失败: " + ", ".join(
             f"{e.get('goods_id')}={str(e.get('error'))[:40]}" for e in errs[:3]))

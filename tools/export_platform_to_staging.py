@@ -62,9 +62,11 @@ BRAND_WORDS = [
 ]
 
 # TikTok 模板规格:销售属性值名称(style/color 映射的 property_value)不得超过 50 字符。
-# run 8ef06c39 真失败:codex styles_en 里 51/64 字符的值被 TikTok 解析器拒收。
-# 超出的一律整件跳过(不截断),与 RAG 的 upload_learning 规则(见 app/rag)一致。
-MAX_STYLE_LEN = 50
+# 但限的是本地化后的字符数:英文值被 TikTok 本地化成泰/越语会膨胀约 1.25 倍。
+# 真失败案例:run 8ef06c39 的 51/64 字符值被拒;run 802177092169 发圈 48 英文字符
+# 泰译后变 60 字符被拒。故英文上限压到 35 给本地化留足余量,超限整件跳过(不截断),
+# 与 RAG 的 upload_learning 规则(见 app/rag)一致。
+MAX_STYLE_LEN = 35
 
 LANGUAGES = {"PH": "English", "TH": "Thai", "VN": "Vietnamese"}
 
@@ -562,8 +564,8 @@ def main() -> None:
             if (not selected_mode) and (not args.no_sku_cost_filter) and \
                     not (args.min_cost <= sku.cost_cny <= args.max_cost):
                 continue
-            # 上传规格:style 映射的 property_value 不得超过 50 字符(TikTok 真拒收),
-            # 超长整件跳过,不截断 —— 与 RAG upload_learning 规则一致
+            # 上传规格:property_value 限 50 字符且按本地化后算(英文→泰/越会膨胀),
+            # 英文超 MAX_STYLE_LEN 即整件跳过,不截断 —— 与 RAG upload_learning 规则一致
             style_en = resolve_style_en(sku, style_map)
             if len(style_en) > MAX_STYLE_LEN:
                 skipped_style += 1
@@ -573,7 +575,8 @@ def main() -> None:
             rows.append(make_row(p, sku, title, description, src_kw, copy_source,
                                  style_map, mkt, sku_costs))
     if skipped_style:
-        print(f"[警告] 共跳过 {skipped_style} 个超长 style 的 SKU(TikTok 属性值限 {MAX_STYLE_LEN} 字符)")
+        print(f"[警告] 共跳过 {skipped_style} 个 style 英文超 {MAX_STYLE_LEN} 字符的 SKU"
+              f"(TikTok 限本地化后 50 字符,此上限为本地化余量)")
 
     run_dir = Path(args.run_dir) if args.run_dir else (
         wf / "runs" / f"platform_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}" / args.market.lower()

@@ -36,8 +36,11 @@ from . import app as app_client
 API = "https://open.feishu.cn/open-apis/bitable/v1"
 
 # 上架表「状态」单选取值 —— 与 app/agent/bitable_flow.py 常量一致
+# 「上架待核对」= 批次级结果含失败件、无法逐件定位时的诚实中间态
+# (卖家后台只给成功/失败件数,不标成功也不标失败,提示运营核对)。
 LISTING_STATUSES = ["待上架", "处理中", "文案生成中", "图片质检中",
-                    "审批中", "上架中", "已上架", "上架失败", "已驳回"]
+                    "审批中", "上架中", "已上架", "上架失败", "已驳回",
+                    "上架待核对"]
 # 上架表「店铺站点」单选取值
 SITE_OPTIONS = ["TH店铺", "PH店铺", "VN店铺"]
 # 选品表「分类」单选取值 —— 与 app/cleaning.infer_category 产出对齐
@@ -190,6 +193,36 @@ def update_record(record_id, fields, table_id=None):
                     table_id=table_id)
 
 
+def ensure_status_option(status, table_id=None):
+    """确保上架表「状态」单选字段含某选项(幂等)。
+
+    Feishu 单选字段写入不在 options 里的值会被拒(实测),新增状态须先同步字段
+    的 property.options。用于「上架待核对」等诚实中间态。返回是否成功(已存在也 True)。
+    """
+    try:
+        tid = table_id
+        fields = list_fields(table_id=tid)
+        sf = next((f for f in fields if str(f.get("field_name") or "") == "状态"), None)
+        if not sf:
+            print(f"[bitable] 状态字段未找到,无法建选项 {status!r}", flush=True)
+            return False
+        opts = [(sf.get("property") or {}).get("options") or []]
+        names = {str(o.get("name") or "") for o in opts[0]}
+        if status in names:
+            return True
+        new_opts = [{"name": n} for n in LISTING_STATUSES]
+        field_id = sf.get("field_id")
+        _request("PUT", f"/fields/{field_id}",
+                 payload={"field_name": sf.get("field_name"),
+                          "type": sf.get("type"),
+                          "property": {"options": new_opts}}, table_id=tid)
+        print(f"[bitable] 状态字段已加选项 {status!r}", flush=True)
+        return True
+    except Exception as exc:
+        print(f"[bitable] 建状态选项失败({status!r}): {exc}", flush=True)
+        return False
+
+
 def delete_record(record_id, table_id=None):
     """删除一行（默认上架表）。幂等:记录不存在会抛 BitableError,调用方自行决定是否吞。"""
     return _request("DELETE", f"/records/{record_id}", table_id=table_id)
@@ -198,6 +231,32 @@ def delete_record(record_id, table_id=None):
 def list_fields(table_id=None):
     """返回 [{field_name, type, ...}]（默认上架表），用于自检字段是否齐全。"""
     return _request("GET", "/fields", table_id=table_id).get("items", [])
+
+
+# 新建批次冷却:select_upload/补位建行是逐个 API 调用(10 行约 20~30s,网络慢更久),
+# 轮询每 45s 捡一次,若撞在建行中途会把同一批拦腰捡走(实测 10 行被捡 7 行剩 3 行,
+# 剩余行要等整批跑完才被捡,批次被拆两段)。冷却期内不捡新批次,等建完再整批进流水线。
+_BATCH_COOLDOWN_S = 45
+
+
+def _batch_started_at(batch_id) -> float | None:
+    """从批次号解析建行起点时间戳(s)。sel_/refill_YYYYMMDD_HHMMSS。
+    解析不了(手动/无批次)返回 None,不设冷却。"""
+    b = str(batch_id or "").strip()
+    for prefix in ("sel_", "refill_"):
+        if b.startswith(prefix):
+            try:
+                return time.mktime(time.strptime(b[len(prefix):], "%Y%m%d_%H%M%S"))
+            except ValueError:
+                return None
+    return None
+
+
+def _batch_too_new(batch_id) -> bool:
+    t0 = _batch_started_at(batch_id)
+    if t0 is None:
+        return False
+    return (time.time() - t0) < _BATCH_COOLDOWN_S
 
 
 def pickup_pending(lock_from="待上架", lock_to="处理中", page_size=20,
@@ -210,6 +269,7 @@ def pickup_pending(lock_from="待上架", lock_to="处理中", page_size=20,
     批次隔离:select_upload 新建行带「任务批次」;若表里存在带任务批次的待上架
     行,只捡其中批次号最新的那批(即刚 select 的行),不把表里残留的旧待上架行
     整批卷进来混批。表里手动标「待上架」的行(无任务批次)仍会正常被捡。
+    新建批次在冷却期内不捡(见 _BATCH_COOLDOWN_S),防建行中途被拦腰捡成两段。
     """
     rows = list_records([("状态", "is", lock_from)], page_size=page_size)
     if not rows:
@@ -220,6 +280,11 @@ def pickup_pending(lock_from="待上架", lock_to="处理中", page_size=20,
         # 只捡最新批次(任务批次按时间字符串排序,最新最大)
         latest = max(str((r.get("fields") or {}).get(BATCH_FIELD) or "").strip()
                      for r in batched)
+        if _batch_too_new(latest):
+            # 批次还在建行中(逐个 API 调用,几十秒级):本次不捡,等下一轮建完。
+            print(f"[bitable] 批次 {latest} 刚生成(<{_BATCH_COOLDOWN_S}s),"
+                  f"本次不捡,等建完再整批进流水线", flush=True)
+            return []
         rows = [r for r in rows
                 if str((r.get("fields") or {}).get(BATCH_FIELD) or "").strip() == latest]
     now_ms = int(time.time() * 1000)
