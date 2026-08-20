@@ -1,0 +1,48 @@
+version: 1
+change: business-closed-loop-hardening
+state:
+  stage: executing
+  workflow: full
+  dp_0_confirmed: true
+  dp_1_confirmed: true
+  artifact_language: zh-CN
+  dp_0_decisions: "artifact_language=zh-CN; 完善 FastAPI + MySQL 业务闭环；修正看板统计与 MySQL 标识；完善文案、质检、审批、导出和上架前链路；TikTok、AI、飞书、CDP 必须使用真实适配器并在缺少凭据或运行环境时明确失败；不伪造外部成功状态；保留既有数据迁移与业务能力。"
+  dp_1_result: "confirmed: 完整业务闭环完善，真实外部集成与诚实失败状态属于目标；不伪造 TikTok、AI、飞书、CDP 成功。"
+  dp_1_timestamp: "2026-08-21T00:00:00Z"
+  dp_2_result: "approved: 业务闭环完善规格包，包含统计一致性、文案恢复、统一上架门禁、真实外部集成状态和 MySQL 回归约束。"
+  dp_2_timestamp: "2026-08-21T00:00:00Z"
+  dp_3_result: "approved: 执行契约覆盖 6 项需求、5 个批次、测试义务、回退条件和完成标准。"
+  dp_3_timestamp: "2026-08-21T00:00:00Z"
+artifacts:
+  order:
+    - proposal.md
+    - specs
+    - design.md
+    - tasks.md
+execution:
+  defaultLanguage: zh-CN
+  mode: Batch Inline
+  selected: true
+  reason: "用户确认 Batch Inline；按 5 个串行批次逐批实现和验证。"
+  dp_4_result: "confirmed: Batch Inline，5 个串行批次，依赖关系为 batch-1→batch-2→batch-3→batch-4→batch-5。"
+  waves:
+    - id: batch-1
+      strategy: serial
+      tasks: [1, 2]
+      depends_on: []
+    - id: batch-2
+      strategy: serial
+      tasks: [3]
+      depends_on: [batch-1]
+    - id: batch-3
+      strategy: serial
+      tasks: [4]
+      depends_on: [batch-2]
+    - id: batch-4
+      strategy: serial
+      tasks: [5]
+      depends_on: [batch-3]
+    - id: batch-5
+      strategy: serial
+      tasks: [6, 7]
+      depends_on: [batch-4]

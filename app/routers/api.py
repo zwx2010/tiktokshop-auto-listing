@@ -12,6 +12,7 @@ from ..coze_client import get_coze_client
 from ..database import get_db
 from ..excel_export import workbook_bytes
 from ..models import Account, Listing, Product, ProductSku, Task
+from ..metrics import active_product_count
 from ..pipeline import ingest_capture
 
 router = APIRouter()
@@ -76,7 +77,7 @@ def _get_or_create_account(db: Session, name: str, market: str) -> Account:
 def stats(db: Session = Depends(get_db)):
     return {
         "accounts": db.query(func.count(Account.id)).scalar(),
-        "products": db.query(func.count(Product.id)).scalar(),
+        "products": active_product_count(db),
         "skus": db.query(func.count(ProductSku.id)).scalar(),
         "listings": db.query(func.count(Listing.id)).scalar(),
         "tasks": db.query(func.count(Task.id)).scalar(),

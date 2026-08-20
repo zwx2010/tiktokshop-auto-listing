@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from ..database import SessionLocal
 from ..models import Account, Listing, Product, ProductSku
+from ..metrics import active_product_count
 from ..timeutil import fmt_utc
 
 router = APIRouter()
@@ -21,7 +22,7 @@ def index(request: Request):
     try:
         stats = {
             "accounts": db.query(func.count(Account.id)).scalar() or 0,
-            "products": db.query(func.count(Product.id)).filter(Product.active == True).scalar() or 0,
+            "products": active_product_count(db),
             "skus": db.query(func.count(ProductSku.id)).scalar() or 0,
             "listings": db.query(func.count(Listing.id)).scalar() or 0,
         }
