@@ -1,7 +1,7 @@
 version: 1
 change: business-closed-loop-hardening
 state:
-  stage: executing
+  stage: closing
   workflow: full
   dp_0_confirmed: true
   dp_1_confirmed: true
@@ -13,6 +13,11 @@ state:
   dp_2_timestamp: "2026-08-21T00:00:00Z"
   dp_3_result: "approved: 执行契约覆盖 6 项需求、5 个批次、测试义务、回退条件和完成标准。"
   dp_3_timestamp: "2026-08-21T00:00:00Z"
+  dp_6_result: "pass: 33 pytest tests passed; MySQL Alembic 0003 head; live health 200/200; stats, integration status, copy audit, export and FK checks passed."
+  dp_6_timestamp: "2026-08-21T00:00:00Z"
+  dp_7_result: "confirmed: 业务闭环完善完成，真实外部集成状态可诊断，缺少凭据时不伪造成功，最终验证报告已记录。"
+  dp_7_timestamp: "2026-08-21T00:00:00Z"
+  test_result: pass
 artifacts:
   order:
     - proposal.md
