@@ -13,6 +13,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -68,7 +69,7 @@ class Product(Base):
     category: Mapped[str] = mapped_column(String(64), default="")
     main_image_url: Mapped[str] = mapped_column(String(1000), default="")
     image_urls: Mapped[list] = mapped_column(JSON, default=list)
-    cost_cny_used: Mapped[float] = mapped_column(default=0.0)
+    cost_cny_used: Mapped[float] = mapped_column(Numeric(10, 2), default=0.0)
     cost_source: Mapped[str] = mapped_column(String(32), default="")  # sku_matrix/detail_price/search_buffered/fallback
     weight_g: Mapped[int] = mapped_column(Integer, default=80)
     dedup_key: Mapped[str] = mapped_column(String(255), unique=True)  # pdd:{goods_id}
@@ -92,7 +93,7 @@ class ProductSku(Base):
     style_en: Mapped[str] = mapped_column(String(128), default="")  # 1688 中文款式 → 英文(上传表用)
     size: Mapped[str] = mapped_column(String(32), default="One Size")
     supplier_sku_id: Mapped[str] = mapped_column(String(64), default="")
-    cost_cny: Mapped[float] = mapped_column(default=0.0)
+    cost_cny: Mapped[float] = mapped_column(Numeric(10, 2), default=0.0)
     stock: Mapped[int] = mapped_column(Integer, default=500)
 
     product: Mapped["Product"] = relationship(back_populates="skus")
@@ -108,10 +109,10 @@ class Listing(Base):
     market_code: Mapped[str] = mapped_column(String(2), default="TH")
     title: Mapped[str] = mapped_column(String(300), default="")
     description: Mapped[str] = mapped_column(Text, default="")
-    price: Mapped[float] = mapped_column(default=0.0)  # 展示价
-    target_sale_price: Mapped[float] = mapped_column(default=0.0)  # 目标成交价
+    price: Mapped[float] = mapped_column(Numeric(12, 2), default=0.0)  # 展示价
+    target_sale_price: Mapped[float] = mapped_column(Numeric(12, 2), default=0.0)  # 目标成交价
     currency: Mapped[str] = mapped_column(String(3), default="THB")
-    discount_rate: Mapped[float] = mapped_column(default=0.25)
+    discount_rate: Mapped[float] = mapped_column(Numeric(4, 2), default=0.25)
     seller_sku: Mapped[str] = mapped_column(String(128), unique=True)
     listing_status: Mapped[str] = mapped_column(String(16), default="draft")  # draft/ready/submitted/failed
     sku_snapshot: Mapped[list] = mapped_column(JSON, default=list)
@@ -131,5 +132,197 @@ class Task(Base):
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     state: Mapped[dict] = mapped_column(JSON, default=dict)
     error_message: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AccountApiCredential(Base):
+    __tablename__ = "account_api_credentials"
+    __table_args__ = (UniqueConstraint("account_id", "platform_api", name="uq_account_api"),)
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("accounts.id", ondelete="CASCADE"))
+    platform_api: Mapped[str] = mapped_column(String(32), default="tiktok_open")
+    app_key: Mapped[str] = mapped_column(String(255), default="")
+    app_secret: Mapped[str] = mapped_column(String(255), default="")
+    access_token: Mapped[str] = mapped_column(Text, default="")
+    refresh_token: Mapped[str] = mapped_column(Text, default="")
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    scope: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class UploadResult(Base):
+    __tablename__ = "upload_results"
+    __table_args__ = (UniqueConstraint("listing_id", "processed_by", name="uq_upload_processed"),)
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    listing_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("listings.id", ondelete="CASCADE"))
+    account_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    market_code: Mapped[str] = mapped_column(String(2), default="TH")
+    row_status: Mapped[str] = mapped_column(String(16), default="error")
+    error_code: Mapped[str] = mapped_column(String(64), default="")
+    error_message: Mapped[str] = mapped_column(String(500), default="")
+    error_category: Mapped[str] = mapped_column(String(64), default="")
+    processed_by: Mapped[str] = mapped_column(String(128), default="")
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Order(Base):
+    __tablename__ = "orders"
+    __table_args__ = (UniqueConstraint("account_id", "order_no", name="uq_account_order"),)
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("accounts.id"))
+    order_no: Mapped[str] = mapped_column(String(64))
+    market_code: Mapped[str] = mapped_column(String(2), default="TH")
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    buyer_note: Mapped[str] = mapped_column(String(500), default="")
+    total_amount: Mapped[float] = mapped_column(Numeric(12, 2), default=0.0)
+    currency: Mapped[str] = mapped_column(String(3), default="THB")
+    ship_by_deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sync_source: Mapped[str] = mapped_column(String(16), default="api")
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("orders.id", ondelete="CASCADE"))
+    seller_sku: Mapped[str] = mapped_column(String(128), default="")
+    product_title: Mapped[str] = mapped_column(String(300), default="")
+    qty: Mapped[int] = mapped_column(Integer, default=1)
+    unit_price: Mapped[float] = mapped_column(Numeric(12, 2), default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("accounts.id"))
+    thread_id: Mapped[str] = mapped_column(String(128), default="")
+    external_message_id: Mapped[str] = mapped_column(String(128), unique=True)
+    direction: Mapped[str] = mapped_column(String(8), default="in")
+    from_user: Mapped[str] = mapped_column(String(128), default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    attachments: Mapped[list] = mapped_column(JSON, default=list)
+    intent: Mapped[str] = mapped_column(String(32), default="")
+    ai_reply_draft: Mapped[str] = mapped_column(Text, default="")
+    reply_status: Mapped[str] = mapped_column(String(16), default="none")
+    sync_source: Mapped[str] = mapped_column(String(16), default="api")
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class MessageAttachment(Base):
+    __tablename__ = "message_attachments"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("messages.id", ondelete="CASCADE"))
+    media_type: Mapped[str] = mapped_column(String(32), default="image")
+    url: Mapped[str] = mapped_column(String(1000), default="")
+    local_path: Mapped[str] = mapped_column(String(500), default="")
+    mime: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ImageQaRecord(Base):
+    __tablename__ = "image_qa_records"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    ref_type: Mapped[str] = mapped_column(String(16))
+    ref_id: Mapped[int] = mapped_column(BigInteger)
+    image_url: Mapped[str] = mapped_column(String(1000), default="")
+    image_path: Mapped[str] = mapped_column(String(500), default="")
+    rule_checks: Mapped[dict] = mapped_column(JSON, default=dict)
+    ai_checks: Mapped[dict] = mapped_column(JSON, default=dict)
+    overall: Mapped[str] = mapped_column(String(16), default="review")
+    fail_reasons: Mapped[list] = mapped_column(JSON, default=list)
+    qa_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class TaskLog(Base):
+    __tablename__ = "task_logs"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"))
+    level: Mapped[str] = mapped_column(String(16), default="info")
+    message: Mapped[str] = mapped_column(String(1000), default="")
+    context: Mapped[dict] = mapped_column(JSON, default=dict)
+    ts: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class SyncWatermark(Base):
+    __tablename__ = "sync_watermarks"
+    __table_args__ = (UniqueConstraint("account_id", "sync_type", name="uq_sync_watermark"),)
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("accounts.id", ondelete="CASCADE"))
+    sync_type: Mapped[str] = mapped_column(String(32))
+    last_key: Mapped[str] = mapped_column(String(128), default="")
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class SkippedProduct(Base):
+    __tablename__ = "skipped_products"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    product_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("products.id"), nullable=True)
+    source_platform: Mapped[str] = mapped_column(String(16), default="")
+    source_goods_id: Mapped[str] = mapped_column(String(64), default="")
+    reason: Mapped[str] = mapped_column(String(255), default="")
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    skipped_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class DedupRegistry(Base):
+    __tablename__ = "dedup_registry"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    dedup_key: Mapped[str] = mapped_column(String(255), unique=True)
+    product_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("products.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="discovered")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(100), unique=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    actor: Mapped[str] = mapped_column(String(100), default="system")
+    action: Mapped[str] = mapped_column(String(64), default="")
+    object_type: Mapped[str] = mapped_column(String(32), default="")
+    object_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    before: Mapped[dict] = mapped_column(JSON, default=dict)
+    after: Mapped[dict] = mapped_column(JSON, default=dict)
+    ts: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

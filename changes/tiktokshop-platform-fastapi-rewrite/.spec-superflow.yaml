@@ -1,0 +1,41 @@
+version: 1
+change: tiktokshop-platform-fastapi-rewrite
+state:
+  stage: specifying
+  workflow: full
+  dp_0_confirmed: true
+  dp_1_confirmed: true
+  artifact_language: zh-CN
+  dp_0_decisions: "artifact_language=zh-CN; 分层重构现有 TikTokShop Platform Lite；完整保留业务能力；运行时数据库改为 MySQL；完整迁移 SQLite 数据；允许重新设计 API；要求全链路业务验收。"
+  dp_1_result: "confirmed: 分层重构 FastAPI 平台，完整保留业务闭环，MySQL 读写并完整迁移 SQLite，API 可重新设计但业务功能必须完整。"
+artifacts:
+  order:
+    - proposal.md
+    - specs
+    - design.md
+    - tasks.md
+execution:
+  defaultLanguage: zh-CN
+  mode: SDD
+  selected: true
+  reason: "用户选择 SDD；本变更跨数据库、配置、API、任务和外部集成，按 5 个批次逐批实施与审查。"
+  waves:
+    - id: batch-1
+      strategy: serial
+      tasks: [1, 2, 3]
+    - id: batch-2
+      strategy: serial
+      tasks: [4]
+      depends_on: [batch-1]
+    - id: batch-3
+      strategy: serial
+      tasks: [5]
+      depends_on: [batch-2]
+    - id: batch-4
+      strategy: serial
+      tasks: [6, 7]
+      depends_on: [batch-3]
+    - id: batch-5
+      strategy: serial
+      tasks: [8, 9]
+      depends_on: [batch-4]
