@@ -37,5 +37,6 @@ class ListingWorkflow:
             copy_status=payload["copy"]["status"],
             image_qa=payload["image_qa"]["overall"],
             approved=payload.get("approved", False),
+            account_integration_status=payload.get("account_integration_status", "not_configured"),
         )
         return self.cdp.submit_listing(payload)

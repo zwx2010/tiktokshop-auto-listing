@@ -13,6 +13,33 @@ class WorkflowIntegrationTests(unittest.TestCase):
             gate.check(copy_status="ready", image_qa="fail", approved=True)
         self.assertTrue(gate.check(copy_status="ready", image_qa="pass", approved=True))
 
+    def test_publication_gate_blocks_unconfirmed_account_integration(self):
+        from app.application.workflow import PublicationGate
+        from app.domain.errors import InvalidStateTransition
+
+        with self.assertRaises(InvalidStateTransition):
+            PublicationGate().check(
+                copy_status="ready",
+                image_qa="pass",
+                approved=True,
+                account_integration_status="not_configured",
+            )
+
+    def test_publication_gate_reports_all_failed_gates(self):
+        from app.application.workflow import evaluate_publication_gates
+
+        result = evaluate_publication_gates(
+            copy_status="copy_missing",
+            image_qa="fail",
+            approved=False,
+            account_integration_status="failed",
+        )
+
+        self.assertFalse(result["eligible"])
+        self.assertEqual(
+            result["failed_gates"], ["copy", "image_qa", "approval", "account_integration"]
+        )
+
     def test_worker_runs_one_task_at_a_time_and_records_failure(self):
         from app.jobs.worker import TaskWorker
 
@@ -66,6 +93,34 @@ class WorkflowIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(calls, ["copy"])
+
+    def test_listing_workflow_requires_explicit_account_integration_status(self):
+        from app.application.pipeline import ListingWorkflow
+        from app.domain.errors import InvalidStateTransition
+
+        class Copy:
+            def generate(self, product, market_code):
+                return {"status": "ready", "title": "t", "description": "d"}
+
+        class Qa:
+            def check(self, image_urls, market_code):
+                return {"overall": "pass"}
+
+        class Feishu:
+            def send_approval(self, payload):
+                return "approval-1"
+
+        class Cdp:
+            def submit_listing(self, payload):
+                raise AssertionError("CDP must not be called")
+
+        workflow = ListingWorkflow(copy=Copy(), image_qa=Qa(), feishu=Feishu(), cdp=Cdp())
+        with self.assertRaises(InvalidStateTransition):
+            workflow.submit_after_approval({
+                "copy": {"status": "ready"},
+                "image_qa": {"overall": "pass"},
+                "approved": True,
+            })
 
     def test_legacy_copy_gateway_never_returns_fake_ready_copy(self):
         from app.coze_client import CopyResult
