@@ -16,6 +16,7 @@
 （看板仍可手动访问 http://127.0.0.1:8000/dashboard/）。日志写 data/launcher.log。
 """
 import argparse
+import json
 import os
 import re
 import shutil
@@ -78,6 +79,12 @@ def _http_ok(port: int, path="/dashboard/", timeout=2.0) -> bool:
             return r.status == 200
     except Exception:
         return False
+
+
+def _integration_status(port: int) -> list[dict]:
+    url = f"http://127.0.0.1:{port}/api/integrations/status"
+    with urlopen(url, timeout=3.0) as r:
+        return json.loads(r.read().decode("utf-8")).get("integrations", [])
 
 
 def _check_port_free(port: int) -> bool:
@@ -212,6 +219,12 @@ def health_check() -> int:
     log("== 健康检查 ==")
     if _http_ok(DEFAULT_PORT):
         log("  服务器  : OK  (http://127.0.0.1:%d/dashboard/)" % DEFAULT_PORT)
+        try:
+            for item in _integration_status(DEFAULT_PORT):
+                log("  集成 %-8s: %s" % (item.get("provider", "?"), item.get("status", "unknown")))
+        except Exception as exc:
+            log(f"  集成状态 : 读取失败 ({exc})")
+            ok = False
     else:
         log("  服务器  : 未运行（先选 1 启动）")
         ok = False

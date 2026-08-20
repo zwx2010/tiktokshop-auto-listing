@@ -1,6 +1,6 @@
 # TikTokShop 多账号自动化运营平台（Lite）
 
-用 FastAPI + MySQL 串起来的 TikTok Shop 多账号运营工具：1688 采集 → 清洗定价 → 三语文案 → 审核 → CDP 真实上架 → 飞书机器人审批。数据全部真实，不含任何演示/模拟成分。
+用 FastAPI + MySQL 串起来的 TikTok Shop 多账号运营工具：1688 采集 → 清洗定价 → 三语文案 → 审核 → CDP 真实上架 → 飞书机器人审批。外部服务只记录真实结果；缺少凭据或运行环境时明确返回未配置/不可用，不伪造成功。
 
 ## 架构流程
 
@@ -72,6 +72,7 @@ python scripts/launcher.py --deps       # 装依赖
 - **审核门**：`app/agent/approval.py` 状态机；审批通过后自动触发**真实 CDP 上架**（端口 9344）
 - **飞书机器人**：审批卡片/群消息回调 → 审批状态机；cpolar 隧道对外
 - **Web 看板**：账号 / 商品 / SKU / 上架记录
+- **集成状态**：`GET /api/integrations/status` 只读检查 TikTok、AI、飞书、CDP 的真实配置状态；`configured` 不代表已经连通，只有 provider 明确返回成功才是 `confirmed`
 
 ## 目录结构
 
@@ -102,6 +103,7 @@ TikTokShop_Platform_Lite/
 
 ```bash
 set DATABASE_URL=mysql+pymysql://user:pass@localhost:3306/tiktok_platform
+```
 
 首次迁移 SQLite 业务数据：
 
@@ -109,6 +111,19 @@ set DATABASE_URL=mysql+pymysql://user:pass@localhost:3306/tiktok_platform
 python tools/migrate_sqlite_to_mysql.py --source data/platform.db --target "$DATABASE_URL" --report data/migration-report.json
 alembic upgrade head
 ```
+
+文案与外部服务配置：
+
+- AI 文案：`COZE_API_TOKEN`、`COZE_BOT_ID`；未配置时 Listing 保持 `copy_missing`。
+- TikTok：在 MySQL 的 `account_api_credentials` 中配置账号凭据；没有真实 token 时账号集成状态为 `not_configured`。
+- 飞书：`config/feishu.local.json` 配置应用或机器人 webhook；配置存在只代表 `configured`，不代表消息已送达。
+- CDP：设置 `CDP_ENDPOINT` 或 `CDP_URL`，并准备真实浏览器调试运行环境。
+
+服务启动后建议先检查：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/health/ready
+curl http://127.0.0.1:8000/api/integrations/status
 ```
 
 Schema 见 [`docs/02_database_schema.md`](docs/02_database_schema.md)，部署要点见 [`docs/新机器部署.md`](docs/新机器部署.md)。
