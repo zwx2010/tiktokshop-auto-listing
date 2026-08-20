@@ -12,11 +12,12 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
 from .agent import approval
+from .api.app import create_app
 from .database import init_db
 from .feishu import handlers
 from .routers import agent, api, feishu, pages
 
-app = FastAPI(title="TikTokShop 多账号自动化运营平台", version="0.1.0")
+app = create_app()
 
 # ---------------------------------------------------------------- 多维表格轮询
 # 只开一条流水线(_busy),避免两个批次同时抢同一个 CDP 浏览器(端口 9344/9223)冲突。
@@ -77,16 +78,6 @@ def _start_bitable_poll() -> None:
     threading.Thread(target=_poll_loop, daemon=True).start()
     print(f"[bitable] 轮询已启动: 每{POLL_INTERVAL_S}s 扫「待上架」行 → 真实流水线",
           flush=True)
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    init_db()
-    # 飞书审批回调接线:卡片按钮/群消息 → 审批状态机(M3 编排)
-    handlers.set_handlers(on_message=approval.on_message,
-                          on_card_action=approval.on_card_action)
-    # 多维表格:运营在表里标「待上架」→ 轮询自动跑真实流水线
-    _start_bitable_poll()
 
 
 @app.get("/", include_in_schema=False)
