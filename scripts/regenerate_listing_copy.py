@@ -35,6 +35,7 @@ from sqlalchemy.orm import selectinload  # noqa: E402
 
 from app.database import SessionLocal  # noqa: E402
 from app.models import Account, Listing, Product, ProductSku  # noqa: E402
+from app.application.copy_recovery import record_copy_result  # noqa: E402
 
 DEFAULT_STORE = "RoseSeek"
 _LANGS = {"PH": "English", "TH": "Thai", "VN": "Vietnamese"}
@@ -285,15 +286,13 @@ def main() -> int:
                     try:
                         ok, reason = _validate_copy(title, desc)
                         if title and desc and ok:
-                            lst.title = title
-                            lst.description = desc
-                            lst.listing_status = "ready"
+                            record_copy_result(lst, title=title, description=desc,
+                                               source="claude", valid=True)
                             done["llm"] += 1
                         else:
                             # 空文案 或 未过 RAG 规则校验 → 标 copy_missing，绝不上架
-                            lst.title = ""
-                            lst.description = ""
-                            lst.listing_status = "copy_missing"
+                            record_copy_result(lst, title="", description="", source="claude",
+                                               valid=False, reason=reason or "empty copy")
                             if ok:
                                 done["missing"] += 1
                             else:
@@ -353,9 +352,8 @@ def main() -> int:
                     if lst is None:
                         continue
                     try:
-                        lst.title = row["title"]
-                        lst.description = row["description"]
-                        lst.listing_status = "ready"
+                        record_copy_result(lst, title=row["title"], description=row["description"],
+                                           source="codex", valid=True)
                         done["codex"] += 1
                         db.commit()
                     except Exception as exc:
@@ -380,9 +378,8 @@ def main() -> int:
                         if lst is None:
                             continue
                         try:
-                            lst.title = ""
-                            lst.description = ""
-                            lst.listing_status = "copy_missing"
+                            record_copy_result(lst, title="", description="", source="", valid=False,
+                                               reason="no configured real copy provider")
                             done["missing"] += 1
                             db.commit()
                         except Exception as exc:
@@ -396,9 +393,8 @@ def main() -> int:
         for lst in db.query(Listing).filter(Listing.listing_status == "ready").all():
             ok, reason = _validate_copy(lst.title, lst.description)
             if not ok:
-                lst.title = ""
-                lst.description = ""
-                lst.listing_status = "copy_missing"
+                record_copy_result(lst, title="", description="", source=lst.copy_source,
+                                   valid=False, reason=reason)
                 db.commit()
                 sweep += 1
                 print(f"  [终检拦截] listing#{lst.id}: {reason}", flush=True)

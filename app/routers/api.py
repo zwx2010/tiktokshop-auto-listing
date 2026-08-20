@@ -139,6 +139,9 @@ def listings(db: Session = Depends(get_db), limit: int = 100):
             "currency": l.currency,
             "seller_sku": l.seller_sku,
             "status": l.listing_status,
+            "copy_source": l.copy_source,
+            "copy_reason": l.copy_reason or ("copy not yet recovered" if l.listing_status == "copy_missing" else ""),
+            "copy_checked_at": l.copy_checked_at,
             "sku_count": len(l.sku_snapshot or []),
         }
         for l in rows

@@ -115,6 +115,9 @@ class Listing(Base):
     discount_rate: Mapped[float] = mapped_column(Numeric(4, 2), default=0.25)
     seller_sku: Mapped[str] = mapped_column(String(128), unique=True)
     listing_status: Mapped[str] = mapped_column(String(16), default="draft")  # draft/ready/submitted/failed
+    copy_source: Mapped[str] = mapped_column(String(64), default="")
+    copy_reason: Mapped[str] = mapped_column(String(500), default="")
+    copy_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sku_snapshot: Mapped[list] = mapped_column(JSON, default=list)
     warning_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

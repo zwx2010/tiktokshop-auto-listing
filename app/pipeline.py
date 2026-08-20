@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from . import cleaning
 from .config import DEFAULT_STORE_NAME
+from .application.copy_recovery import record_copy_result
 from .coze_client import get_coze_client
 from .models import Listing, Product, ProductSku
 from .pricing import price_skus
@@ -180,12 +181,22 @@ def build_listing(
         coze = coze or get_coze_client()
         copy = coze.generate_copy(ctx, market)
         title, desc = copy.title, copy.description
-        status = "ready" if (title and desc) else "copy_missing"
+        copy_source = getattr(copy, "source", "")
+        copy_reason = "" if (title and desc) else "provider returned empty title or description"
     except Exception as exc:
         print(f"[build_listing] 文案源不可用({product.source_goods_id}/{market}): "
               f"{str(exc)[:80]} → copy_missing", flush=True)
         title, desc = "", ""
-        status = "copy_missing"
+        copy_source = ""
+        copy_reason = str(exc)[:500]
+
+    copy_result = {
+        "title": title,
+        "description": desc,
+        "source": copy_source,
+        "valid": bool(title and desc),
+        "reason": copy_reason,
+    }
 
     # SKU 快照：逐 SKU 定价
     snapshot = []
@@ -213,9 +224,9 @@ def build_listing(
         currency=pricing["currency"],
         discount_rate=pricing["discount_rate"],
         seller_sku=snapshot[0]["seller_sku"] if snapshot else f"PDD-{market}-{product.source_goods_id}",
-        listing_status=status,
         sku_snapshot=snapshot,
     )
+    record_copy_result(listing, **copy_result)
     db.add(listing)
     db.flush()
     return listing
