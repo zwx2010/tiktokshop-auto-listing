@@ -218,13 +218,17 @@ def health_check() -> int:
     for name, p in [("feishu.local.json", BASE_DIR / "config" / "feishu.local.json"),
                     ("market_pricing.json", BASE_DIR / "config" / "market_pricing.json"),
                     ("listing_defaults.json", BASE_DIR / "config" / "listing_defaults.json"),
-                    ("platform.db", BASE_DIR / "data" / "platform.db"),
                     ("rag_corpus.db", BASE_DIR / "data" / "rag_corpus.db")]:
         if p.exists():
             log(f"  {name:<22}: OK")
         else:
             log(f"  {name:<22}: 缺失")
             ok = False
+    if os.environ.get("DATABASE_URL", "").lower().startswith("mysql+"):
+        log("  DATABASE_URL     : MySQL 配置已设置")
+    else:
+        log("  DATABASE_URL     : 缺失或不是 MySQL")
+        ok = False
     pkg = _roseek_pkg_dir()
     log(f"  ROSEEK_PKG_DIR : {pkg if pkg else '未找到（同级的 RoseSeek_TikTokShop_AI_Localized_20260809）'}")
     cpolar = find_cpolar()

@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from ..application.services import TaskService
 from ..domain.entities import TaskAggregate
+from ..infrastructure.task_repository import SqlAlchemyTaskRepository
 
 
 class TaskWorker:
@@ -38,3 +39,29 @@ class TaskWorker:
             return True
         finally:
             self._lock.release()
+
+
+class PersistentTaskWorker:
+    """MySQL task/task_logs 的最小 worker 循环。"""
+
+    def __init__(self, *, session_factory, handlers: dict[str, Callable], owner: str = "worker-1"):
+        self.session_factory = session_factory
+        self.handlers = handlers
+        self.owner = owner
+
+    def run_once(self) -> bool:
+        session = self.session_factory()
+        try:
+            repo = SqlAlchemyTaskRepository(session)
+            task = repo.claim_pending(owner=self.owner)
+            if task is None:
+                return False
+            try:
+                self.handlers[task.task_type](task)
+            except Exception as exc:
+                repo.finish(task, owner=self.owner, success=False, error=str(exc))
+            else:
+                repo.finish(task, owner=self.owner, success=True)
+            return True
+        finally:
+            session.close()
