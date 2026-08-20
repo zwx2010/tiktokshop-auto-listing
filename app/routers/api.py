@@ -13,6 +13,7 @@ from ..database import get_db
 from ..excel_export import workbook_bytes
 from ..models import Account, Listing, Product, ProductSku, Task
 from ..metrics import active_product_count
+from ..integrations.status import integration_statuses
 from ..pipeline import ingest_capture
 
 router = APIRouter()
@@ -92,6 +93,12 @@ def accounts(db: Session = Depends(get_db)):
          "status": a.status, "api_status": a.api_status, "health": a.health_score}
         for a in rows
     ]
+
+
+@router.get("/integrations/status")
+def integration_status(db: Session = Depends(get_db)):
+    """Read-only readiness snapshot; configured is not the same as confirmed success."""
+    return {"integrations": [item.as_dict() for item in integration_statuses(db)]}
 
 
 @router.get("/products")
