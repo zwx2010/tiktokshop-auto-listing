@@ -9,8 +9,8 @@
 ## Waves
 
 - batch-1: passed; tasks 1, 2, 3; review `.superpowers/sdd/reviews/batch-1.md`
-- batch-2: eligible; task 4
-- batch-3: blocked by batch-2
+- batch-2: passed; task 4; review `.superpowers/sdd/reviews/batch-2.md`
+- batch-3: eligible; task 5
 - batch-4: blocked by batch-3
 - batch-5: blocked by batch-4
 
@@ -19,7 +19,7 @@
 - Task 1: complete (baseline and scope inventory)
 - Task 2: complete (MySQL foundation and 19-table metadata)
 - Task 3: complete (SQLite to MySQL migration CLI and report)
-- Task 4: pending
+- Task 4: complete (domain entities, services, ports)
 - Task 5: pending
 - Task 6: pending
 - Task 7: pending
