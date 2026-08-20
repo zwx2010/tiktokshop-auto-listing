@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.config import validate_runtime_database_url
 from app.database import Base
-from app.migration.plan import classify_row
+from app.migration.plan import classify_row, coerce_explicit_null, ordered_tables
 from app.migration.report import MigrationReport
 
 
@@ -48,7 +48,8 @@ def migrate(source: Path, target_url: str, report_path: Path, *, batch_size: int
     report = MigrationReport()
 
     with sqlite3.connect(source) as source_connection, target_engine.begin() as target_connection:
-        for table_name in _table_names(source_connection):
+        source_names = set(_table_names(source_connection))
+        for table_name in ordered_tables(target_metadata, source_names):
             rows = _source_rows(source_connection, table_name)
             if table_name not in target_names:
                 report.record_table(table_name, read=len(rows), inserted=0, skipped=0)
@@ -61,7 +62,11 @@ def migrate(source: Path, target_url: str, report_path: Path, *, batch_size: int
             skipped_count = 0
             for offset in range(0, len(rows), batch_size):
                 for row in rows[offset:offset + batch_size]:
-                    values = {key: value for key, value in row.items() if key in target_table.c}
+                    values = {
+                        key: coerce_explicit_null(table_name, key, value)
+                        for key, value in row.items()
+                        if key in target_table.c
+                    }
                     existing = False
                     if primary_keys and all(key in values for key in primary_keys):
                         predicate = [target_table.c[key] == values[key] for key in primary_keys]

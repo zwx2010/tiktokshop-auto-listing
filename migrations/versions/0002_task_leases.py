@@ -13,14 +13,22 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("tasks", sa.Column("owner", sa.String(length=100), nullable=False, server_default=""))
-    op.add_column("tasks", sa.Column("lease_until", sa.DateTime(), nullable=True))
-    op.add_column("tasks", sa.Column("started_at", sa.DateTime(), nullable=True))
-    op.add_column("tasks", sa.Column("finished_at", sa.DateTime(), nullable=True))
+    inspector = sa.inspect(op.get_bind())
+    existing = {column["name"] for column in inspector.get_columns("tasks")}
+    columns = {
+        "owner": sa.Column("owner", sa.String(length=100), nullable=False, server_default=""),
+        "lease_until": sa.Column("lease_until", sa.DateTime(), nullable=True),
+        "started_at": sa.Column("started_at", sa.DateTime(), nullable=True),
+        "finished_at": sa.Column("finished_at", sa.DateTime(), nullable=True),
+    }
+    for name, column in columns.items():
+        if name not in existing:
+            op.add_column("tasks", column)
 
 
 def downgrade() -> None:
-    op.drop_column("tasks", "finished_at")
-    op.drop_column("tasks", "started_at")
-    op.drop_column("tasks", "lease_until")
-    op.drop_column("tasks", "owner")
+    inspector = sa.inspect(op.get_bind())
+    existing = {column["name"] for column in inspector.get_columns("tasks")}
+    for name in ("finished_at", "started_at", "lease_until", "owner"):
+        if name in existing:
+            op.drop_column("tasks", name)

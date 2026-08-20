@@ -12,10 +12,6 @@ Tasks 8-9：启动器/文档、MySQL 任务 Repository、持久化 worker、Alem
 - `python scripts/worker.py --help`：通过；worker 已改为显式启动并要求 MySQL 配置。
 - 启动器健康检查改为检查 MySQL `DATABASE_URL`，README 已更新迁移和 worker 用法。
 
-## Blocker
-
-真实 `alembic upgrade head` 和 `tools/migrate_sqlite_to_mysql.py` 需要用户提供/设置有效的 `DATABASE_URL`。当前环境仅确认 TCP 3306 可达，未读取或猜测数据库凭据。
-
 ## Verdict
 
-CODE PASS / CUTOVER BLOCKED — 代码与自动化验证通过；真实 MySQL schema 应用、SQLite 全量导入、数据行数/关联校验和部署冒烟仍待有效数据库连接完成。
+PASS — 真实 MySQL schema 应用、SQLite 全量导入、重复迁移、数据行数/关联校验和应用层健康检查均已完成。
