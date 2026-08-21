@@ -159,8 +159,8 @@ def build_listing(
         return existing
 
     skus = product.skus
-    costs = [s.cost_cny for s in skus if s.cost_cny > 0] or [product.cost_cny_used]
-    representative_cost = min(costs)
+    costs = [float(s.cost_cny) for s in skus if s.cost_cny and s.cost_cny > 0]
+    representative_cost = min(costs or [float(product.cost_cny_used or 0)])
     pricing = price_skus(market, representative_cost, product.weight_g)
 
     style_code = str(product.source_goods_id)[-4:]
@@ -201,7 +201,7 @@ def build_listing(
     # SKU 快照：逐 SKU 定价
     snapshot = []
     for i, s in enumerate(skus):
-        p = price_skus(market, s.cost_cny, product.weight_g)
+        p = price_skus(market, float(s.cost_cny or 0), product.weight_g)
         snapshot.append(
             {
                 "seller_sku": f"PDD-{market}-{product.source_goods_id}-{i + 1:03d}",
