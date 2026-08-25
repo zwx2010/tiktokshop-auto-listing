@@ -12,19 +12,31 @@ from app.database import SessionLocal
 from app.jobs.worker import PersistentTaskWorker
 
 
+def build_worker(*, session_factory=None, handlers=None, owner="worker-1"):
+    """Build the production persistent worker with injectable test boundaries."""
+    factory = session_factory or SessionLocal
+    if factory is None:
+        raise SystemExit("DATABASE_URL must point to MySQL before starting the worker")
+    if handlers is None:
+        from app.agent import tasks
+
+        handlers = {
+            "upload": lambda task: tasks.run_stage(
+                "upload", task.state or {}, timeout_s=900
+            )
+        }
+    return PersistentTaskWorker(
+        session_factory=factory,
+        handlers=handlers,
+        owner=owner,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the explicit TikTokShop task worker")
     parser.add_argument("--once", action="store_true", help="run one pending task and exit")
     parser.parse_args()
-    if SessionLocal is None:
-        raise SystemExit("DATABASE_URL must point to MySQL before starting the worker")
-    from app.agent import tasks
-
-    worker = PersistentTaskWorker(
-        session_factory=SessionLocal,
-        handlers={"upload": lambda task: tasks.run_stage("upload", task.state or {}, timeout_s=900)},
-    )
-    worker.run_once()
+    build_worker().run_once()
     return 0
 
 

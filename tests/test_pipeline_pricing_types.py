@@ -20,6 +20,23 @@ class PipelinePricingTypeTests(unittest.TestCase):
             "https://cbu01.alicdn.com/b.jpg",
         ])
 
+    def test_export_keeps_real_urls_unverified_when_vision_helper_is_missing(self):
+        import importlib
+
+        exporter = importlib.import_module("tools.export_platform_to_staging")
+        original = exporter.QWEN_TOOL
+        try:
+            exporter.QWEN_TOOL = "missing-qwen-vision-helper"
+            self.assertEqual(
+                exporter.filter_small_images(
+                    ["https://example.com/a.jpg", "https://example.com/b.jpg"],
+                    300,
+                ),
+                ["https://example.com/a.jpg", "https://example.com/b.jpg"],
+            )
+        finally:
+            exporter.QWEN_TOOL = original
+
     def test_decimal_database_costs_are_accepted_by_listing_pricing(self):
         from decimal import Decimal
         from app.pricing import price_skus

@@ -50,6 +50,18 @@ class TaskRepositoryTests(unittest.TestCase):
         self.assertEqual(SqlAlchemyTaskRepository(check).get(task.id).status, "success")
         check.close()
 
+    def test_worker_entrypoint_builds_the_persistent_worker(self):
+        from app.jobs.worker import PersistentTaskWorker
+        from scripts.worker import build_worker
+
+        worker = build_worker(
+            session_factory=self.Session,
+            handlers={"upload": lambda task: None},
+            owner="entrypoint-test",
+        )
+        self.assertIsInstance(worker, PersistentTaskWorker)
+        self.assertEqual(worker.owner, "entrypoint-test")
+
 
 if __name__ == "__main__":
     unittest.main()
