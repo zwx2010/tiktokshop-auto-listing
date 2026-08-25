@@ -340,6 +340,10 @@ def filter_small_images(urls, min_dim: int) -> list[str]:
     全部被滤空时兜底保留第一张(商品必须有主图,宁留小图也不让主图空缺;
     审图闸门仍会按 TikTok 下限单独判它)。不造假 —— 保留的都是真实存在的图。
     """
+    # The optional vision helper is not present in every local checkout. Keep
+    # real source URLs in that case; do not invent dimensions or drop images.
+    if not Path(QWEN_TOOL).is_file():
+        return list(dict.fromkeys(str(u).strip() for u in (urls or []) if str(u).strip()))[:9]
     seen: list[str] = []
     for raw in (urls or []):
         url = str(raw).strip()

@@ -19,6 +19,9 @@ def _hidden_shipping(profile: dict, weight_g: int) -> float:
 
 def price_skus(market: str, cost_cny: float, weight_g: int) -> dict:
     """给定市场/成本/重量，返回定价结果。"""
+    # SQLAlchemy Numeric columns are returned as Decimal by MySQL. Normalize
+    # the boundary value before mixing it with configured float parameters.
+    cost_cny = float(cost_cny or 0)
     cfg = get_market_pricing()
     p = cfg["markets"][market]
     discount = float(cfg["discount_rate"])

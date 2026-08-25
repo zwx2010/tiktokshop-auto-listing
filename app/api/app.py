@@ -5,20 +5,20 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from ..application.services import TaskService
 from .health import router as health_router
 from .tasks import router as task_router
 
 
 def create_app(*, database_ping: Callable[[], bool] | None = None,
-               start_worker: Callable[[], None] | None = None) -> FastAPI:
+               start_worker: Callable[[], None] | None = None,
+               task_repository_factory: Callable[[], object] | None = None) -> FastAPI:
     """创建 API-only 应用；worker 只有显式传入启动器时才运行。"""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.database_ping = database_ping or _default_database_ping
         app.state.worker_started = False
-        app.state.task_service = TaskService()
+        app.state.task_repository_factory = task_repository_factory or _default_task_repository
         if start_worker is not None:
             start_worker()
             app.state.worker_started = True
@@ -38,6 +38,15 @@ def _default_database_ping() -> bool:
     from ..database import ping
 
     return ping()
+
+
+def _default_task_repository():
+    from ..database import SessionLocal
+    from ..infrastructure.task_repository import SqlAlchemyTaskRepository
+
+    if SessionLocal is None:
+        raise RuntimeError("DATABASE_URL must point to MySQL before creating tasks")
+    return SqlAlchemyTaskRepository(SessionLocal())
 
 
 app = create_app()

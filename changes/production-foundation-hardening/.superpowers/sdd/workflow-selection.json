@@ -1,0 +1,64 @@
+{
+  "schema_version": 2,
+  "available_modes": [
+    "full",
+    "hotfix",
+    "tweak",
+    "quick",
+    "lightweight"
+  ],
+  "facts": {
+    "task_count": 4,
+    "file_count": 12,
+    "config_doc_only": "no",
+    "schema_api_change": "yes",
+    "new_module": "yes",
+    "behavioral_constraint_change": "yes",
+    "cross_module_change": "yes",
+    "uncertainty": "high",
+    "request_kind": "standard",
+    "affected_paths": null,
+    "exclusion_checks": {
+      "production_behavior": "unknown",
+      "public_boundary": "unknown",
+      "installer": "unknown",
+      "state_machine": "unknown",
+      "external_side_effect": "unknown",
+      "data_permission_config_semantics": "unknown",
+      "expected_behavior_clear": "unknown",
+      "verification_reproducible": "unknown",
+      "impact_paths_complete": "unknown"
+    }
+  },
+  "missing_facts": [],
+  "status": "ready",
+  "recommendation": {
+    "mode": "full",
+    "reasons": [
+      "Risk signals require the user to choose Quick or Full."
+    ],
+    "risk_reasons": [
+      "behavioral constraint changed (PRD, spec, design, data, or permission)",
+      "schema or API changes",
+      "new module",
+      "cross-module change",
+      "high uncertainty"
+    ]
+  },
+  "created_at": "2026-08-25T19:26:04.205Z",
+  "selection": {
+    "mode": "full",
+    "reason": "用户确认采用 Full 流程完成生产基础加固",
+    "followed_recommendation": true,
+    "acknowledged_non_recommendation": false,
+    "accepted_automatically": false,
+    "risk_override": false,
+    "verification_strategy": null,
+    "scope_confirmation": null,
+    "verification_result": null,
+    "escalation_reason": null,
+    "confirmed_at": "2026-08-25T19:26:49.040Z",
+    "selected_at": "2026-08-25T19:26:49.040Z"
+  },
+  "hash": "sha256:f17ad58b14f4cb297bd64e00069f1ef950641c5c05fec8d39c41e219ecf7e545"
+}

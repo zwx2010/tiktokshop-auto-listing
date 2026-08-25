@@ -71,6 +71,14 @@ def ingest_capture(
     existing = db.query(Product).filter(Product.dedup_key == dedup_key).first()
     if existing:
         # 商品已存在：仍要确保本账号/本站点有上架记录（多账号多站点）
+        # Backfill images for products ingested before string-form 1688 gallery
+        # captures were normalized. This is idempotent and preserves existing
+        # curated images when they are already present.
+        if not existing.image_urls:
+            images = cleaning.clean_images(capture.get("images") or [])
+            if images:
+                existing.main_image_url = existing.main_image_url or images[0]
+                existing.image_urls = images
         build_listing(
             db, existing, market=market, account_id=account_id,
             store_name=store_name, coze=coze,

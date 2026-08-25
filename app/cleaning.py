@@ -3,6 +3,7 @@
 确定性清洗（颜色/款式/图片/价格选择）用纯函数实现，
 和 AI 能力解耦 —— 能确定的逻辑不交给 AI。
 """
+import json
 import re
 
 CN_COLOR_MAP = {
@@ -82,6 +83,18 @@ def clean_variant_value(value: str) -> str:
 
 def clean_images(urls) -> list[str]:
     """过滤促销图/头像/动图/图标，保留商品图，去重。"""
+    if isinstance(urls, str):
+        # MySQL legacy TEXT columns may return JSON arrays as strings, while
+        # 1688 CDP captures store galleries as whitespace-separated URLs.
+        raw = urls.strip()
+        if raw.startswith("["):
+            try:
+                decoded = json.loads(raw)
+                urls = decoded if isinstance(decoded, list) else []
+            except (TypeError, ValueError):
+                urls = []
+        else:
+            urls = re.findall(r"https?://\S+", raw)
     seen: list[str] = []
     for raw in (urls or []):
         url = str(raw).strip()

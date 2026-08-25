@@ -17,6 +17,10 @@ class TaskResponse(BaseModel):
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 def create_task(payload: TaskCreateRequest, request: Request) -> TaskResponse:
-    task = request.app.state.task_service.create(task_type=payload.task_type)
-    return TaskResponse(id=task.id, task_type=task.task_type, status=task.status,
-                        attempts=task.attempts)
+    repository = request.app.state.task_repository_factory()
+    try:
+        task = repository.create(payload.task_type)
+        return TaskResponse(id=task.id, task_type=task.task_type, status=task.status,
+                            attempts=task.attempts)
+    finally:
+        repository.session.close()

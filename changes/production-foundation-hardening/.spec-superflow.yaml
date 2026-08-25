@@ -1,0 +1,48 @@
+# .spec-superflow.yaml — lightweight state machine
+# Derived data. Always rebuildable from artifacts. Lost/corrupt → fall back to content-level detection.
+
+# === Core state ===
+state: approved-for-build
+workflow: full
+revision: 1
+
+# === Hashes (fast staleness detection) ===
+artifacts_hash: sha256:af1a43e1ba63dd67488c77bf77f68f4f917fd94498311d020f435230b09181aa
+contract_hash: sha256:cf3759bfe47f11ab85fde267b142a0e436386e8dcb5f45669c5160e92f65fd33
+
+# === Execution progress ===
+execution_mode: sdd
+execution_plan_hash: sha256:dfa86e6fe0110c6e6b4b1d115a41139e6226413c3cdbf832d21ff00945a5d013
+execution_plan_revision: 1
+batches_completed: 0
+test_result: null
+spec_merged: false
+spec_publication_receipt: null
+
+# === Metadata ===
+change_name: production-foundation-hardening
+last_transition: 2026-08-25T19:40:39.211Z
+last_transition_from: bridging
+last_transition_to: approved-for-build
+
+# === Decision points ===
+dp_0_decisions: artifact_language=zh-CN; workflow_path=full（与推荐一致）; 变更目标=生产基础加固，开展 TikTok、飞书、AI、CDP 真实联调，以飞书多维表格接管运营界面，并统一整理现有未提交修改; 真实联调边界=先无副作用验证连通，再经独立人工审批发布约50个测试商品，发布前核对账号/站点/数量/门禁/回滚方案; 前端决策=飞书多维表格为唯一主要运营入口，本地Web看板保留为只读诊断页; 约束=保留现有真实业务数据与有效修复，禁止伪造外部成功，先完成计划和审批再实现
+dp_0_result: confirmed
+dp_0_confirmed: true
+dp_0_timestamp: 2026-08-25T19:26:49Z
+dp_1_result: confirmed: 以飞书多维表格为主要运营入口；本地看板仅只读诊断；真实集成先验证连通，再经人工审批发布约50个测试商品；统一任务、审批、并发和日志安全；保留并纳入既有未提交修复。
+dp_1_timestamp: 2026-08-25T19:35:03Z
+dp_2_result: null
+dp_2_timestamp: null
+dp_3_result: approved: 用户批准执行契约；W1–W4 仅完成代码、迁移与无副作用验证，W5 仍须独立人工发布批准。
+dp_3_timestamp: 2026-08-25T19:40:39Z
+dp_4_result: sdd: plan revision 1; user-confirmed; 用户确认采用 SDD，按五个串行 wave 执行并逐 wave 审查
+dp_4_timestamp: 2026-08-25T19:42:03.267Z
+dp_5_result: null
+dp_5_timestamp: null
+dp_5_decisions: null
+dp_5_confirmed: null
+dp_6_result: null
+dp_6_timestamp: null
+dp_7_result: null
+dp_7_timestamp: null

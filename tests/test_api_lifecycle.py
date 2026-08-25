@@ -39,15 +39,47 @@ class ApiLifecycleTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertFalse(client.app.state.worker_started)
 
-    def test_task_api_returns_versioned_task_shape(self):
+    def test_task_api_persists_a_task_for_an_independent_worker(self):
         from fastapi.testclient import TestClient
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+        from app import models  # noqa: F401
         from app.api.app import create_app
+        from app.database import Base
+        from app.infrastructure.task_repository import SqlAlchemyTaskRepository
+        from app.jobs.worker import PersistentTaskWorker
 
-        with TestClient(create_app(database_ping=lambda: True)) as client:
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        session_factory = sessionmaker(bind=engine)
+
+        def repository_factory():
+            return SqlAlchemyTaskRepository(session_factory())
+
+        with TestClient(create_app(
+            database_ping=lambda: True,
+            task_repository_factory=repository_factory,
+        )) as client:
             response = client.post("/api/v1/tasks", json={"task_type": "upload"})
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["task_type"], "upload")
-        self.assertEqual(response.json()["status"], "pending")
+        task_id = response.json()["id"]
+        seen = []
+        worker = PersistentTaskWorker(
+            session_factory=session_factory,
+            handlers={"upload": lambda task: seen.append(task.id)},
+            owner="worker-a",
+        )
+        self.assertTrue(worker.run_once())
+        self.assertEqual(seen, [task_id])
+        check = repository_factory()
+        self.assertEqual(check.get(task_id).status, "success")
+        check.session.close()
+        engine.dispose()
 
 
 if __name__ == "__main__":
