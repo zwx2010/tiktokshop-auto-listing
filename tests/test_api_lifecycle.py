@@ -81,6 +81,42 @@ class ApiLifecycleTests(unittest.TestCase):
         check.session.close()
         engine.dispose()
 
+    def test_task_api_reuses_idempotency_key(self):
+        from fastapi.testclient import TestClient
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+        from app import models  # noqa: F401
+        from app.api.app import create_app
+        from app.database import Base
+        from app.infrastructure.task_repository import SqlAlchemyTaskRepository
+
+        engine = create_engine(
+            "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        )
+        Base.metadata.create_all(engine)
+        session_factory = sessionmaker(bind=engine)
+
+        def repository_factory():
+            return SqlAlchemyTaskRepository(session_factory())
+
+        with TestClient(create_app(
+            database_ping=lambda: True,
+            task_repository_factory=repository_factory,
+        )) as client:
+            first = client.post(
+                "/api/v1/tasks", headers={"Idempotency-Key": "api-w2-same"},
+                json={"task_type": "upload"},
+            )
+            second = client.post(
+                "/api/v1/tasks", headers={"Idempotency-Key": "api-w2-same"},
+                json={"task_type": "upload"},
+            )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first.json()["id"], second.json()["id"])
+        engine.dispose()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,16 @@ class TaskRepositoryTests(unittest.TestCase):
         Base.metadata.create_all(cls.engine)
         cls.Session = sessionmaker(bind=cls.engine)
 
+    def setUp(self):
+        from app.models import ApprovalRun, Task, TaskLog
+
+        session = self.Session()
+        session.query(TaskLog).delete()
+        session.query(Task).delete()
+        session.query(ApprovalRun).delete()
+        session.commit()
+        session.close()
+
     @classmethod
     def tearDownClass(cls):
         cls.engine.dispose()
@@ -61,6 +71,63 @@ class TaskRepositoryTests(unittest.TestCase):
         )
         self.assertIsInstance(worker, PersistentTaskWorker)
         self.assertEqual(worker.owner, "entrypoint-test")
+
+    def test_expired_lease_is_reclaimed_and_logged(self):
+        from datetime import datetime, timedelta, timezone
+        from app.infrastructure.task_repository import SqlAlchemyTaskRepository
+        from app.models import TaskLog
+
+        session = self.Session()
+        repo = SqlAlchemyTaskRepository(session, lease_seconds=60)
+        task = repo.create("upload")
+        task.status = "running"
+        task.owner = "dead-worker"
+        task.lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        task.attempts = 1
+        session.commit()
+        claimed = SqlAlchemyTaskRepository(session, lease_seconds=60).claim_pending(
+            owner="recovery-worker"
+        )
+        self.assertEqual(claimed.id, task.id)
+        self.assertEqual(claimed.owner, "recovery-worker")
+        self.assertEqual(claimed.attempts, 2)
+        logs = session.query(TaskLog).filter(TaskLog.task_id == task.id).all()
+        self.assertTrue(any("claimed:recovery-worker" in log.message for log in logs))
+        session.close()
+
+    def test_create_is_idempotent_by_key(self):
+        from app.infrastructure.task_repository import SqlAlchemyTaskRepository
+
+        session = self.Session()
+        repo = SqlAlchemyTaskRepository(session)
+        first = repo.create("upload", idempotency_key="w2-same")
+        second = repo.create("upload", idempotency_key="w2-same")
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(session.query(self._task_model()).count(), 1)
+        session.close()
+
+    @staticmethod
+    def _task_model():
+        from app.models import Task
+
+        return Task
+
+    def test_approval_repository_transition_is_persistent_and_idempotent(self):
+        from app.infrastructure.approval_repository import ApprovalRunRepository
+
+        session = self.Session()
+        repo = ApprovalRunRepository(session)
+        repo.create("w2-approval", {"mode": "review_only"}, {"title": "test"})
+        session.close()
+
+        fresh = self.Session()
+        persistent = ApprovalRunRepository(fresh)
+        self.assertEqual(persistent.get("w2-approval").status, "pending")
+        approved = persistent.transition("w2-approval", "approve_all")
+        self.assertEqual(approved["status"], "approved")
+        self.assertIsNone(persistent.transition("w2-approval", "reject"))
+        self.assertEqual(persistent.get("w2-approval").decision, "approve_all")
+        fresh.close()
 
 
 if __name__ == "__main__":

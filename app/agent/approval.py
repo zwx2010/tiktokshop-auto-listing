@@ -18,6 +18,31 @@ from . import tasks
 _lock = threading.Lock()
 _STATE = {}          # run_id -> {status, params, decision, created_at, updated_at}
 _TRIGGER_UPLOAD = True   # 审批通过后自动触发真实 CDP 上架;测试可关
+_REPOSITORY_FACTORY = None
+
+
+def configure_repository_factory(factory):
+    """注入持久化审批仓储工厂；传 None 恢复内存测试模式。"""
+    global _REPOSITORY_FACTORY
+    _REPOSITORY_FACTORY = factory
+
+
+def _repository():
+    if _REPOSITORY_FACTORY is not None:
+        return _REPOSITORY_FACTORY()
+    try:
+        from ..database import SessionLocal
+        if SessionLocal is None:
+            return None
+        from ..infrastructure.approval_repository import ApprovalRunRepository
+        return ApprovalRunRepository(SessionLocal())
+    except Exception:
+        return None
+
+
+def _close_repository(repo):
+    if repo is not None:
+        repo.session.close()
 
 
 def _now():
@@ -28,18 +53,48 @@ def create(run_id, params=None, card_data=None):
     st = {"status": "pending", "params": params or {}, "card_data": card_data or {},
           "decision": "", "created_at": _now(), "updated_at": _now(),
           "last_error": "", "upload_result": None}
-    with _lock:
-        _STATE[run_id] = st
+    repo = _repository()
+    if repo is not None:
+        try:
+            row = repo.create(run_id, params=params, card_data=card_data)
+            st = repo.as_dict(row)
+            st.setdefault("last_error", "")
+            st.setdefault("upload_result", None)
+            with _lock:
+                _STATE[run_id] = st
+        finally:
+            _close_repository(repo)
+    else:
+        with _lock:
+            _STATE[run_id] = st
     return run_id
 
 
 def get(run_id):
+    repo = _repository()
+    if repo is not None:
+        try:
+            row = repo.get(run_id)
+            if row is not None:
+                st = repo.as_dict(row)
+                with _lock:
+                    _STATE[run_id] = dict(st)
+                return st
+        finally:
+            _close_repository(repo)
     with _lock:
         st = _STATE.get(run_id)
         return dict(st) if st else None
 
 
 def list_runs():
+    repo = _repository()
+    if repo is not None:
+        try:
+            rows = repo.list_all()
+            return [{"run_id": r.run_id, **repo.as_dict(r)} for r in rows]
+        finally:
+            _close_repository(repo)
     with _lock:
         return [{"run_id": rid, **dict(v)} for rid, v in _STATE.items()]
 
@@ -47,16 +102,31 @@ def list_runs():
 def transition(run_id, decision, trigger_upload=None):
     """decision: approve_all / approve_ok / reject。通过则后台真上架,立即返回。"""
     trigger = _TRIGGER_UPLOAD if trigger_upload is None else trigger_upload
-    with _lock:
-        st = _STATE.get(run_id)
-        if not st:
-            return {"ok": False, "detail": f"unknown run {run_id}"}
-        if st["status"] != "pending":
-            return {"ok": False, "detail": f"already {st['status']}"}
-        st["status"] = "approved" if decision != "reject" else "rejected"
-        st["decision"] = decision
-        st["updated_at"] = _now()
-        snapshot = dict(st)
+    repo = _repository()
+    if repo is not None:
+        try:
+            changed = repo.transition(run_id, decision)
+            if changed is None:
+                row = repo.get(run_id)
+                if row is None:
+                    return {"ok": False, "detail": f"unknown run {run_id}"}
+                return {"ok": False, "detail": f"already {row.status}"}
+            snapshot = dict(changed)
+            with _lock:
+                _STATE[run_id] = dict(snapshot)
+        finally:
+            _close_repository(repo)
+    else:
+        with _lock:
+            st = _STATE.get(run_id)
+            if not st:
+                return {"ok": False, "detail": f"unknown run {run_id}"}
+            if st["status"] != "pending":
+                return {"ok": False, "detail": f"already {st['status']}"}
+            st["status"] = "approved" if decision != "reject" else "rejected"
+            st["decision"] = decision
+            st["updated_at"] = _now()
+            snapshot = dict(st)
     mode = (snapshot.get("params") or {}).get("mode", "upload")
     if snapshot["status"] == "approved" and trigger:
         # 只审不传:审批通过也不触发上架(用户只要求审图把关)
@@ -65,6 +135,12 @@ def transition(run_id, decision, trigger_upload=None):
                 st = _STATE.get(run_id)
                 if st:
                     st["upload_status"] = "skipped"
+            repo = _repository()
+            if repo is not None:
+                try:
+                    repo.set_upload_state(run_id, "skipped")
+                finally:
+                    _close_repository(repo)
             return {"ok": True, "run_id": run_id, "status": snapshot["status"],
                     "decision": decision, "upload_status": "skipped",
                     "detail": "review_only:审批通过,不触发上架(只审不传)"}
@@ -83,6 +159,12 @@ def transition(run_id, decision, trigger_upload=None):
             st = _STATE.get(run_id)
             if st:
                 st["params"] = params
+        repo = _repository()
+        if repo is not None:
+            try:
+                repo.update_params(run_id, params)
+            finally:
+                _close_repository(repo)
         # 真上架耗时数分钟,不在回调里同步等(飞书 3s 超时)。
         # 后台线程跑真实上传,完成后推「上架结果卡」回群。
         _launch_upload(run_id, params)
@@ -102,6 +184,12 @@ def _launch_upload(run_id, params):
         if st:
             st["upload_status"] = "running"
             st["upload_result"] = None
+    repo = _repository()
+    if repo is not None:
+        try:
+            repo.set_upload_state(run_id, "running", result=None)
+        finally:
+            _close_repository(repo)
 
     def _run():
         try:
@@ -114,6 +202,13 @@ def _launch_upload(run_id, params):
             if st:
                 st["upload_status"] = "done"
                 st["upload_result"] = result
+        repo = _repository()
+        if repo is not None:
+            try:
+                repo.set_upload_state(run_id, "done", result=result,
+                                      error="" if result.get("ok") else str(result.get("error") or ""))
+            finally:
+                _close_repository(repo)
         _push_result_card(run_id, result)
 
     threading.Thread(target=_run, name=f"upload-{run_id}", daemon=True).start()

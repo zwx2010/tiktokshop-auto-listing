@@ -2,6 +2,34 @@ import unittest
 
 
 class WorkflowIntegrationTests(unittest.TestCase):
+    def test_approval_state_survives_memory_reset_and_duplicate_callback(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+        from app import models  # noqa: F401
+        from app.agent import approval
+        from app.database import Base
+        from app.infrastructure.approval_repository import ApprovalRunRepository
+
+        engine = create_engine(
+            "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        )
+        Base.metadata.create_all(engine)
+        sessions = sessionmaker(bind=engine)
+        approval.configure_repository_factory(lambda: ApprovalRunRepository(sessions()))
+        approval._STATE.clear()
+        try:
+            approval.create("w2-restart", params={"mode": "review_only"})
+            approval._STATE.clear()
+            first = approval.transition("w2-restart", "approve_all", trigger_upload=False)
+            second = approval.transition("w2-restart", "reject", trigger_upload=False)
+            self.assertEqual(first["status"], "approved")
+            self.assertFalse(second["ok"])
+            self.assertIn("already", second["detail"])
+        finally:
+            approval._STATE.clear()
+            approval.configure_repository_factory(None)
+            engine.dispose()
     def test_publication_gate_blocks_missing_copy_or_failed_image_qa(self):
         from app.application.workflow import PublicationGate
         from app.domain.errors import InvalidStateTransition

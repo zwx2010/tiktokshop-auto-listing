@@ -126,9 +126,11 @@ class Listing(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_task_idempotency_key"),)
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     task_type: Mapped[str] = mapped_column(String(32), default="ingest")  # collect/ingest/copy/upload/sync_orders/sync_messages
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     account_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/running/success/failed/waiting_human
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -139,6 +141,22 @@ class Task(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     state: Mapped[dict] = mapped_column(JSON, default=dict)
     error_message: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ApprovalRun(Base):
+    __tablename__ = "approval_runs"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(64), unique=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    decision: Mapped[str] = mapped_column(String(32), default="")
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    card_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    upload_status: Mapped[str] = mapped_column(String(16), default="")
+    upload_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_error: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
