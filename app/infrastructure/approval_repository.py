@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import ApprovalRun
+from ..models import ApprovalAudit, ApprovalRun
 
 
 class ApprovalRunRepository:
@@ -60,11 +60,18 @@ class ApprovalRunRepository:
             select(ApprovalRun).where(ApprovalRun.run_id == run_id)
             .with_for_update()
         ).scalar_one_or_none()
-        if row is None or row.status != "pending":
+        if row is None:
+            return None
+        if row.status != "pending":
+            self.session.add(ApprovalAudit(run_id=run_id, event="duplicate_callback",
+                                           decision=decision, result=f"already_{row.status}"))
+            self.session.commit()
             return None
         row.status = "approved" if decision != "reject" else "rejected"
         row.decision = decision
         row.updated_at = datetime.now(timezone.utc)
+        self.session.add(ApprovalAudit(run_id=run_id, event="transition",
+                                       decision=decision, result=row.status))
         self.session.commit()
         self.session.refresh(row)
         return self.as_dict(row)

@@ -161,6 +161,18 @@ class ApprovalRun(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class ApprovalAudit(Base):
+    __tablename__ = "approval_audits"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    event: Mapped[str] = mapped_column(String(32))
+    decision: Mapped[str] = mapped_column(String(32), default="")
+    result: Mapped[str] = mapped_column(String(32), default="")
+    context: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class AccountApiCredential(Base):
     __tablename__ = "account_api_credentials"
     __table_args__ = (UniqueConstraint("account_id", "platform_api", name="uq_account_api"),)

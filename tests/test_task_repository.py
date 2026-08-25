@@ -14,12 +14,13 @@ class TaskRepositoryTests(unittest.TestCase):
         cls.Session = sessionmaker(bind=cls.engine)
 
     def setUp(self):
-        from app.models import ApprovalRun, Task, TaskLog
+        from app.models import ApprovalAudit, ApprovalRun, Task, TaskLog
 
         session = self.Session()
         session.query(TaskLog).delete()
         session.query(Task).delete()
         session.query(ApprovalRun).delete()
+        session.query(ApprovalAudit).delete()
         session.commit()
         session.close()
 
@@ -127,7 +128,38 @@ class TaskRepositoryTests(unittest.TestCase):
         self.assertEqual(approved["status"], "approved")
         self.assertIsNone(persistent.transition("w2-approval", "reject"))
         self.assertEqual(persistent.get("w2-approval").decision, "approve_all")
+        from app.models import ApprovalAudit
+        audits = fresh.query(ApprovalAudit).filter_by(run_id="w2-approval").all()
+        self.assertEqual([a.event for a in audits], ["transition", "duplicate_callback"])
         fresh.close()
+
+    def test_mysql_two_workers_only_one_claims_same_task(self):
+        from app.database import SessionLocal
+        if SessionLocal is None:
+            self.skipTest("configured MySQL required for concurrency proof")
+        from app.infrastructure.task_repository import SqlAlchemyTaskRepository
+        from app.models import Task
+        import threading
+        seed = SessionLocal()
+        task = SqlAlchemyTaskRepository(seed).create("upload", idempotency_key="w2-mysql-claim")
+        seed.close()
+        results = []
+        barrier = threading.Barrier(2)
+        def claim(owner):
+            session = SessionLocal()
+            try:
+                barrier.wait()
+                row = SqlAlchemyTaskRepository(session).claim_pending(owner=owner)
+                results.append(row.owner if row else None)
+            finally:
+                session.close()
+        threads = [threading.Thread(target=claim, args=(f"mysql-{i}",)) for i in (1, 2)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertEqual(sum(x is not None for x in results), 1)
+        cleanup = SessionLocal()
+        cleanup.query(Task).filter(Task.idempotency_key == "w2-mysql-claim").delete()
+        cleanup.commit(); cleanup.close()
 
 
 if __name__ == "__main__":
