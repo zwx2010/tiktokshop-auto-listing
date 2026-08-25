@@ -11,6 +11,7 @@ from .tasks import router as task_router
 
 def create_app(*, database_ping: Callable[[], bool] | None = None,
                start_worker: Callable[[], None] | None = None,
+               runtime_initializer: Callable[[], None] | None = None,
                task_repository_factory: Callable[[], object] | None = None) -> FastAPI:
     """创建 API-only 应用；worker 只有显式传入启动器时才运行。"""
 
@@ -22,6 +23,8 @@ def create_app(*, database_ping: Callable[[], bool] | None = None,
         if start_worker is not None:
             start_worker()
             app.state.worker_started = True
+        if runtime_initializer is not None:
+            runtime_initializer()
         yield
 
     app = FastAPI(

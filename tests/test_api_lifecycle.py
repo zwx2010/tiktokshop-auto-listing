@@ -30,6 +30,17 @@ class ApiLifecycleTests(unittest.TestCase):
         with TestClient(create_app(database_ping=lambda: True)) as client:
             self.assertFalse(client.app.state.worker_started)
 
+    def test_lifecycle_runs_explicit_runtime_initializer(self):
+        from fastapi.testclient import TestClient
+        from app.api.app import create_app
+
+        calls = []
+        with TestClient(create_app(
+            database_ping=lambda: True,
+            runtime_initializer=lambda: calls.append("started"),
+        )):
+            self.assertEqual(calls, ["started"])
+
     def test_main_exposes_versioned_api_without_implicit_worker(self):
         from fastapi.testclient import TestClient
         from app.main import app

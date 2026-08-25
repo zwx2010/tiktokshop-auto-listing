@@ -5,6 +5,7 @@
 或：
     python -m app.main
 """
+import os
 import threading
 import time
 
@@ -17,8 +18,6 @@ from .database import init_db
 from .feishu import handlers
 from .routers import agent, api, feishu, pages
 
-app = create_app()
-
 # ---------------------------------------------------------------- 多维表格轮询
 # 只开一条流水线(_busy),避免两个批次同时抢同一个 CDP 浏览器(端口 9344/9223)冲突。
 # 拿行即翻:读到「待上架」立刻翻成「处理中」,下次轮询查不到 → 防重复。
@@ -26,6 +25,7 @@ POLL_INTERVAL_S = 45
 STALE_LOCK_MS = 30 * 60 * 1000
 _STALE_STATUSES = ["处理中", "文案生成中", "图片质检中", "审批中", "上架中"]
 _busy = threading.Event()
+_poll_started = threading.Event()
 
 
 def _recover_stale() -> None:
@@ -75,9 +75,30 @@ def _start_bitable_poll() -> None:
         print("[bitable] 未配置多维表格(app_token/table_id),轮询不启动;"
               "现有飞书消息流程不受影响", flush=True)
         return
+    if _poll_started.is_set():
+        return
+    _poll_started.set()
     threading.Thread(target=_poll_loop, daemon=True).start()
     print(f"[bitable] 轮询已启动: 每{POLL_INTERVAL_S}s 扫「待上架」行 → 真实流水线",
           flush=True)
+
+
+def _configure_robot_runtime() -> None:
+    """在真实服务生命周期中启用飞书表轮询，测试默认不启动外部轮询。"""
+    if os.environ.get("BITABLE_POLL_ENABLED", "").strip() == "1":
+        _start_bitable_poll()
+    else:
+        print("[bitable] 轮询未启用；设置 BITABLE_POLL_ENABLED=1 后重启服务", flush=True)
+
+
+app = create_app(runtime_initializer=_configure_robot_runtime)
+
+# 飞书事件路由通过 handlers 注册槽转发；必须在应用导入时接线，
+# 否则 Webhook 虽返回 200 却只得到 "handler not wired"，不会启动编排。
+handlers.set_handlers(
+    on_message=approval.on_message,
+    on_card_action=approval.on_card_action,
+)
 
 
 @app.get("/", include_in_schema=False)
