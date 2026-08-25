@@ -144,6 +144,22 @@ def transition(run_id, decision, trigger_upload=None):
             return {"ok": True, "run_id": run_id, "status": snapshot["status"],
                     "decision": decision, "upload_status": "skipped",
                     "detail": "review_only:审批通过,不触发上架(只审不传)"}
+        # 手工/历史待上架行不带机器人上传许可。它们可被制表、审图和审批，
+        # 但批准本身绝不能因为轮询启动而触发 CDP。
+        if not (snapshot.get("params") or {}).get("upload_authorized", False):
+            with _lock:
+                st = _STATE.get(run_id)
+                if st:
+                    st["upload_status"] = "waiting_robot_command"
+            repo = _repository()
+            if repo is not None:
+                try:
+                    repo.set_upload_state(run_id, "waiting_robot_command")
+                finally:
+                    _close_repository(repo)
+            return {"ok": True, "run_id": run_id, "status": snapshot["status"],
+                    "decision": decision, "upload_status": "waiting_robot_command",
+                    "detail": "已审批，等待上架机器人明确指令"}
         # 「仅通过审图OK」:用审图过滤副本(已剔除无可用图的阻塞行)上传;
         # 「通过全部」:全量原表。params 无 tables_ok(未生成过滤副本)时退化为原表。
         params = dict(snapshot.get("params") or {})
@@ -892,7 +908,7 @@ def handle_instruction(text):
     intent = _interpret(text)
     mode = intent["mode"]
     run_id = uuid.uuid4().hex[:8]
-    params = {**intent, "run_id": run_id}
+    params = {**intent, "run_id": run_id, "upload_authorized": mode == "upload"}
 
     # 明确不执行 / 无法理解:直接回卡,不建 run、不跑任何 stage
     if mode in ("stop", "reject"):

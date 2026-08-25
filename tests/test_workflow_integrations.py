@@ -1,7 +1,27 @@
 import unittest
+from unittest.mock import patch
 
 
 class WorkflowIntegrationTests(unittest.TestCase):
+    def test_approval_without_robot_upload_authorization_never_launches_upload(self):
+        from app.agent import approval
+
+        approval._STATE.clear()
+        approval._STATE["manual-bitable"] = {
+            "status": "pending", "params": {"mode": "upload", "upload_authorized": False},
+            "decision": "", "created_at": "", "updated_at": "",
+        }
+        try:
+            with patch("app.agent.approval._repository", return_value=None), \
+                 patch("app.agent.approval._launch_upload") as launch:
+                result = approval.transition("manual-bitable", "approve_all", trigger_upload=True)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["upload_status"], "waiting_robot_command")
+            launch.assert_not_called()
+        finally:
+            approval._STATE.clear()
+
     def test_approval_state_survives_memory_reset_and_duplicate_callback(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker

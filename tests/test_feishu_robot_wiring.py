@@ -3,6 +3,17 @@ from unittest.mock import patch
 
 
 class FeishuRobotWiringTests(unittest.TestCase):
+    def test_only_robot_created_selection_batches_authorize_upload(self):
+        from app.agent.bitable_flow import _robot_upload_authorized
+
+        self.assertTrue(_robot_upload_authorized([
+            {"fields": {"任务批次": "sel_20260826_01"}},
+        ]))
+        self.assertFalse(_robot_upload_authorized([
+            {"fields": {"任务批次": "manual_01"}},
+        ]))
+        self.assertFalse(_robot_upload_authorized([{"fields": {}}]))
+
     def test_main_registers_message_and_card_handlers(self):
         from app import main  # noqa: F401
         from app.agent import approval

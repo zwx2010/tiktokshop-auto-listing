@@ -88,6 +88,11 @@ def _row_batch_id(row) -> str:
     return str(v).strip() if v not in (None, "") else ""
 
 
+def _robot_upload_authorized(rows) -> bool:
+    """只有机器人“上架”指令创建的 sel_* 批次可在审批后上传。"""
+    return bool(rows) and all(_row_batch_id(row).startswith("sel_") for row in rows)
+
+
 # 上架表「店铺站点」单选 → 市场代码
 _SITE_TO_MARKET = {"TH店铺": "th", "PH店铺": "ph", "VN店铺": "vn"}
 
@@ -433,6 +438,7 @@ def _process_group(mkt: str, rows):
     _maybe_refill_after_review(mkt, rows, products, tables_ok, gids)
     # 5) 审批卡(按钮回调走现有状态机;通过后 CDP 上架)
     params = {"market": mkt, "mode": "upload", "target": len(gids),
+              "upload_authorized": _robot_upload_authorized(rows),
               "tables": tables, "tables_ok": tables_ok,
               "run_dir": os.path.dirname(os.path.dirname(tables[0])) if tables else "",
               "note": f"多维表格选品({len(gids)}件)",
