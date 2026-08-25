@@ -25,6 +25,9 @@ class FeishuRobotWiringTests(unittest.TestCase):
         self.assertFalse(_is_upload_command("请问要上传吗"))
         self.assertFalse(_is_upload_command("他说上传已经完成"))
         self.assertFalse(_is_upload_command("上架前先看图"))
+        self.assertFalse(_is_upload_command("上传记录"))
+        self.assertFalse(_is_upload_command("发布状态"))
+        self.assertFalse(_is_upload_command("上架情况"))
 
     def test_main_registers_message_and_card_handlers(self):
         from app import main  # noqa: F401

@@ -29,5 +29,6 @@ class UploadAuthorizationRepository:
         if row is None:
             return False
         auth = self.session.get(UploadAuthorization, row)
-        return bool(auth and set(str(x) for x in record_ids if x)
-                    and set(str(x) for x in record_ids if x).issubset(set(auth.record_ids or [])))
+        requested = {str(x) for x in record_ids if x}
+        authorized = {str(x) for x in (auth.record_ids or [])}
+        return bool(requested and requested == authorized)

@@ -329,11 +329,16 @@ def _is_actionable(t):
 
 
 def _is_upload_command(text: str) -> bool:
-    """只把明确上传/发布或“上架(非上架表)”指令作为 CDP 上传许可。"""
+    """只接受严格的正向上传命令，避免把字段/讨论文字当执行指令。"""
     text = re.sub(r"@\S+", "", text or "").strip()
     if re.search(r"(别|不要|不|禁止|勿|无需|先不).{0,4}(上传|发布|上架)", text):
         return False
-    return bool(re.match(r"^(?:请|开始|执行|确认|立即)?\s*(?:上传|发布|上架)(?!表|前|后|流程|吗|？|\?)", text))
+    prefix = r"^(?:请|开始|执行|确认|立即)?\s*"
+    return bool(
+        re.match(prefix + r"上传\s*(?:批次|商品|任务)(?:\s|$)", text, re.I)
+        or re.match(prefix + r"发布\s*(?:批次|商品|任务)(?:\s|$)", text, re.I)
+        or re.match(prefix + r"上架(?:\s*(?:批次|商品|任务|PH|TH|VN|[0-9一二三四五六七八九十]+|项链|耳环|手链|戒指|发饰|配饰))", text, re.I)
+    )
 
 
 def authorize_upload_batch(batch_id: str, record_ids: list[str], command: str) -> bool:
