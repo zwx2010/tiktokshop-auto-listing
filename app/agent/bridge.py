@@ -120,7 +120,7 @@ def run_claude(prompt, *, timeout_s=DEFAULT_TIMEOUT_S, cwd=None, extra_args=None
             "usage": envelope.get("usage"),
             # 只有真失败才填 error(进程非0/封套 is_error);成功时 result 是正常产物,
             # 塞进 error 会被上游 _stage_err 误判成"环节失败",卡上乱标 ⚠️。
-            "error": err or (str(envelope.get("result"))[:300] if is_err else ""),
+            "error": (err or str(envelope.get("result"))[:300]) if is_err else "",
             "exit_code": proc.returncode,
         }
 
