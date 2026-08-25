@@ -99,6 +99,11 @@ async def _read_and_verify(request):
     nonce = request.headers.get("X-Lark-Request-Nonce", "")
     sign = request.headers.get("X-Lark-Signature", "")
     body = _body_bytes(raw)
+    # 飞书事件订阅校验请求只携带 challenge/token，通常没有事件签名。
+    # 先回显 challenge，避免后台把 401/隧道错误页判为“非法 JSON”。
+    # 正常业务事件仍必须经过下方签名/令牌校验。
+    if body.get("type") == "url_verification" and body.get("challenge"):
+        return raw, None
     if not _verified(ts, nonce, sign, body):
         return None, {"ok": False, "detail": "signature mismatch"}
     return raw, None
