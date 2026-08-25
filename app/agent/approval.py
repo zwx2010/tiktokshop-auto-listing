@@ -330,7 +330,36 @@ def _is_actionable(t):
 
 def _is_upload_command(text: str) -> bool:
     """只把明确上传/发布或“上架(非上架表)”指令作为 CDP 上传许可。"""
-    return bool(re.search(r"(上传|发布|上架(?!表))", text or ""))
+    text = text or ""
+    if re.search(r"(别|不要|不|禁止|勿|无需|先不).{0,4}(上传|发布|上架)", text):
+        return False
+    return bool(re.search(r"(上传|发布|上架(?!表))", text))
+
+
+def authorize_upload_batch(batch_id: str, command: str) -> bool:
+    """把机器人创建的批次写入数据库许可表，飞书单元格本身不具备信任边界。"""
+    from ..database import SessionLocal
+    from ..infrastructure.upload_authorization_repository import UploadAuthorizationRepository
+    if SessionLocal is None:
+        return False
+    session = SessionLocal()
+    try:
+        UploadAuthorizationRepository(session).authorize(batch_id, command=command)
+        return True
+    finally:
+        session.close()
+
+
+def is_upload_batch_authorized(batch_id: str) -> bool:
+    from ..database import SessionLocal
+    from ..infrastructure.upload_authorization_repository import UploadAuthorizationRepository
+    if SessionLocal is None or not batch_id:
+        return False
+    session = SessionLocal()
+    try:
+        return UploadAuthorizationRepository(session).is_authorized(batch_id)
+    finally:
+        session.close()
 
 
 def _detect_mode(text):
@@ -745,6 +774,9 @@ def _select_upload(text: str, intent: dict) -> dict:
     if image_jobs:
         # 新任务行的图片+SKU 后台真实上传填充(几十秒级),审批卡不阻塞
         threading.Thread(target=_fill_listing_images, args=(image_jobs,), daemon=True).start()
+    # “选品/制作上架表”只创建待处理行；必须包含明确上传词才写入可信许可。
+    upload_authorized = (bool(created) and _is_upload_command(text)
+                         and authorize_upload_batch(batch_id, text))
     summary = (f"已从采集库选 {created} 件"
                + (f"「{cn_cat}」" if cn_cat else "全部品类")
                + f"生成上架任务({site}),轮询会自动跑")
@@ -758,7 +790,7 @@ def _select_upload(text: str, intent: dict) -> dict:
     sent = fc.deliver_card(fc.approval_card(
         title="上架机器人", color="blue", fields=fields, buttons=[]))
     return {"run_id": None, "mode": "select_upload", "intent": intent,
-            "created": created, "sent": sent}
+            "created": created, "upload_authorized": upload_authorized, "sent": sent}
 
 
 def _fill_listing_images(jobs):

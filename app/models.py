@@ -173,6 +173,17 @@ class ApprovalAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class UploadAuthorization(Base):
+    """机器人指令授予的上传许可；不信任可编辑的飞书表字段。"""
+    __tablename__ = "upload_authorizations"
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    batch_id: Mapped[str] = mapped_column(String(64), unique=True)
+    command: Mapped[str] = mapped_column(String(500), default="")
+    source: Mapped[str] = mapped_column(String(32), default="feishu_robot")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class AccountApiCredential(Base):
     __tablename__ = "account_api_credentials"
     __table_args__ = (UniqueConstraint("account_id", "platform_api", name="uq_account_api"),)
