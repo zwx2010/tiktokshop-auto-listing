@@ -14,6 +14,14 @@ class FeishuRobotWiringTests(unittest.TestCase):
         ]))
         self.assertFalse(_robot_upload_authorized([{"fields": {}}]))
 
+    def test_only_explicit_upload_words_authorize_direct_robot_flow(self):
+        from app.agent.approval import _is_upload_command
+
+        self.assertTrue(_is_upload_command("上架PH站点3件耳环"))
+        self.assertTrue(_is_upload_command("上传批次 sel_20260826"))
+        self.assertFalse(_is_upload_command("采集50个耳环"))
+        self.assertFalse(_is_upload_command("制作上架表"))
+
     def test_main_registers_message_and_card_handlers(self):
         from app import main  # noqa: F401
         from app.agent import approval

@@ -328,6 +328,11 @@ def _is_actionable(t):
     return any(h in t for h in _ACTION_HINTS)
 
 
+def _is_upload_command(text: str) -> bool:
+    """只把明确上传/发布或“上架(非上架表)”指令作为 CDP 上传许可。"""
+    return bool(re.search(r"(上传|发布|上架(?!表))", text or ""))
+
+
 def _detect_mode(text):
     """从指令文本识别模式(正则兜底,优先长词)。"""
     t = (text or "").strip()
@@ -908,7 +913,8 @@ def handle_instruction(text):
     intent = _interpret(text)
     mode = intent["mode"]
     run_id = uuid.uuid4().hex[:8]
-    params = {**intent, "run_id": run_id, "upload_authorized": mode == "upload"}
+    params = {**intent, "run_id": run_id,
+              "upload_authorized": mode == "upload" and _is_upload_command(text)}
 
     # 明确不执行 / 无法理解:直接回卡,不建 run、不跑任何 stage
     if mode in ("stop", "reject"):
