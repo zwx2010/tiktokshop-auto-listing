@@ -330,13 +330,13 @@ def _is_actionable(t):
 
 def _is_upload_command(text: str) -> bool:
     """只把明确上传/发布或“上架(非上架表)”指令作为 CDP 上传许可。"""
-    text = text or ""
+    text = re.sub(r"@\S+", "", text or "").strip()
     if re.search(r"(别|不要|不|禁止|勿|无需|先不).{0,4}(上传|发布|上架)", text):
         return False
-    return bool(re.search(r"(上传|发布|上架(?!表))", text))
+    return bool(re.match(r"^(?:请|开始|执行|确认|立即)?\s*(?:上传|发布|上架)(?!表|前|后|流程|吗|？|\?)", text))
 
 
-def authorize_upload_batch(batch_id: str, command: str) -> bool:
+def authorize_upload_batch(batch_id: str, record_ids: list[str], command: str) -> bool:
     """把机器人创建的批次写入数据库许可表，飞书单元格本身不具备信任边界。"""
     from ..database import SessionLocal
     from ..infrastructure.upload_authorization_repository import UploadAuthorizationRepository
@@ -344,20 +344,21 @@ def authorize_upload_batch(batch_id: str, command: str) -> bool:
         return False
     session = SessionLocal()
     try:
-        UploadAuthorizationRepository(session).authorize(batch_id, command=command)
+        UploadAuthorizationRepository(session).authorize(
+            batch_id, record_ids=record_ids, command=command)
         return True
     finally:
         session.close()
 
 
-def is_upload_batch_authorized(batch_id: str) -> bool:
+def is_upload_batch_authorized(batch_id: str, record_ids: list[str]) -> bool:
     from ..database import SessionLocal
     from ..infrastructure.upload_authorization_repository import UploadAuthorizationRepository
     if SessionLocal is None or not batch_id:
         return False
     session = SessionLocal()
     try:
-        return UploadAuthorizationRepository(session).is_authorized(batch_id)
+        return UploadAuthorizationRepository(session).is_authorized(batch_id, record_ids)
     finally:
         session.close()
 
@@ -745,6 +746,7 @@ def _select_upload(text: str, intent: dict) -> dict:
                 "created": 0, "sent": sent}
 
     created = 0
+    created_record_ids = []
     skipped = 0
     image_jobs = []
     # 本批次号:轮询按它只捡本次新建的行,表里残留的旧「待上架」行不混批。
@@ -767,6 +769,7 @@ def _select_upload(text: str, intent: dict) -> dict:
         try:
             record_id = bitable.create_record(fields)
             if record_id:
+                created_record_ids.append(str(record_id))
                 image_jobs.append((record_id, p["urls"], p["skus"]))
             created += 1
         except Exception as exc:
@@ -775,8 +778,8 @@ def _select_upload(text: str, intent: dict) -> dict:
         # 新任务行的图片+SKU 后台真实上传填充(几十秒级),审批卡不阻塞
         threading.Thread(target=_fill_listing_images, args=(image_jobs,), daemon=True).start()
     # “选品/制作上架表”只创建待处理行；必须包含明确上传词才写入可信许可。
-    upload_authorized = (bool(created) and _is_upload_command(text)
-                         and authorize_upload_batch(batch_id, text))
+    upload_authorized = (bool(created_record_ids) and _is_upload_command(text)
+                         and authorize_upload_batch(batch_id, created_record_ids, text))
     summary = (f"已从采集库选 {created} 件"
                + (f"「{cn_cat}」" if cn_cat else "全部品类")
                + f"生成上架任务({site}),轮询会自动跑")

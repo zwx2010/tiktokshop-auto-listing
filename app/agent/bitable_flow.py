@@ -91,7 +91,9 @@ def _row_batch_id(row) -> str:
 def _robot_upload_authorized(rows) -> bool:
     """只信任数据库记录的机器人许可，飞书可编辑批次号不足以授权上传。"""
     batch_ids = {_row_batch_id(row) for row in rows}
-    return len(batch_ids) == 1 and approval.is_upload_batch_authorized(next(iter(batch_ids), ""))
+    record_ids = [str(row.get("record_id") or "") for row in rows]
+    return (len(batch_ids) == 1 and all(record_ids)
+            and approval.is_upload_batch_authorized(next(iter(batch_ids), ""), record_ids))
 
 
 # 上架表「店铺站点」单选 → 市场代码

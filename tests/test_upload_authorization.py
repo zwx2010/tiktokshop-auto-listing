@@ -14,9 +14,10 @@ class UploadAuthorizationTests(unittest.TestCase):
         session = sessionmaker(bind=engine)()
         repo = UploadAuthorizationRepository(session)
 
-        self.assertFalse(repo.is_authorized("sel_forged"))
-        repo.authorize("sel_robot_01", command="上架PH站点3件耳环")
-        self.assertTrue(repo.is_authorized("sel_robot_01"))
+        self.assertFalse(repo.is_authorized("sel_forged", ["rec_forged"]))
+        repo.authorize("sel_robot_01", record_ids=["rec_robot_1"], command="上架PH站点3件耳环")
+        self.assertTrue(repo.is_authorized("sel_robot_01", ["rec_robot_1"]))
+        self.assertFalse(repo.is_authorized("sel_robot_01", ["rec_robot_1", "rec_forged"]))
         session.close()
 
 

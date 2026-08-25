@@ -6,7 +6,7 @@ class FeishuRobotWiringTests(unittest.TestCase):
     def test_only_persisted_robot_batches_authorize_upload(self):
         from app.agent.bitable_flow import _robot_upload_authorized
 
-        rows = [{"fields": {"任务批次": "sel_20260826_01"}}]
+        rows = [{"record_id": "rec_robot_1", "fields": {"任务批次": "sel_20260826_01"}}]
         with patch("app.agent.approval.is_upload_batch_authorized", return_value=False):
             self.assertFalse(_robot_upload_authorized(rows))
         with patch("app.agent.approval.is_upload_batch_authorized", return_value=True):
@@ -22,6 +22,9 @@ class FeishuRobotWiringTests(unittest.TestCase):
         self.assertFalse(_is_upload_command("制作上架表"))
         self.assertFalse(_is_upload_command("不要上传任何商品"))
         self.assertFalse(_is_upload_command("不发布，先审图"))
+        self.assertFalse(_is_upload_command("请问要上传吗"))
+        self.assertFalse(_is_upload_command("他说上传已经完成"))
+        self.assertFalse(_is_upload_command("上架前先看图"))
 
     def test_main_registers_message_and_card_handlers(self):
         from app import main  # noqa: F401
