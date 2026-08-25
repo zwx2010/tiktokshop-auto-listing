@@ -15,6 +15,7 @@ from ..models import Account, Listing, Product, ProductSku, Task
 from ..metrics import active_product_count
 from ..integrations.status import integration_statuses
 from ..pipeline import ingest_capture
+from ..security.logging import redact
 
 router = APIRouter()
 
@@ -33,7 +34,7 @@ def _log_ingest_body(raw: bytes, note: str = ""):
     with open(_BODY_LOG, "ab") as f:
         f.write(b"===== %s len=%d note=%s =====\n" % (
             datetime.now().isoformat().encode("utf-8"), len(raw), note.encode("utf-8")))
-        f.write(raw)
+        f.write(redact(raw.decode("utf-8", errors="replace")).encode("utf-8"))
         f.write(b"\n")
 
 
@@ -45,7 +46,7 @@ def _log_rejected(goods_id: str, reason: str):
     """
     os.makedirs(os.path.dirname(_REJECT_LOG), exist_ok=True)
     with open(_REJECT_LOG, "a", encoding="utf-8") as f:
-        f.write("%s\t%s\t%s\n" % (datetime.now().isoformat(), goods_id or "-", reason))
+        f.write("%s\t%s\t%s\n" % (datetime.now().isoformat(), redact(goods_id or "-"), redact(reason)))
 
 
 def _tol_loads(raw: bytes):
