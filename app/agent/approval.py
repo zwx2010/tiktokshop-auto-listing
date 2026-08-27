@@ -997,25 +997,29 @@ def handle_instruction(text):
 
     # 采集入库:collect(真采集)→ 确定性桥接脚本写平台库 → 回结果卡(不制表/不审图/不上架)
     if mode == "capture_db":
-        _collect_started = time.time()
-        stages["collect"] = tasks.run_stage("collect", p, timeout_s=timeouts.get("collect", 420))
-        collect = _stage_dict(stages.get("collect"))
-        if _stage_err(stages.get("collect")):
-            # 采集失败不直接跳过:claude -p 收尾响应失败(unrecognized_model 等网关偶发)
-            # 不代表采集没完成。找本轮 collect 期间新出现的 1688 run,有真数据就继续入库;
-            # 找不到才判失败(避免把历史 run 灌进库)。
-            rescued_dir = _find_recent_collect_run(after_ts=_collect_started)
-            if rescued_dir:
-                br = _run_bridge_deterministic(rescued_dir, p.get("market", "ph"))
-                if isinstance(br, dict) and isinstance(br.get("stage_result"), dict):
-                    br["stage_result"]["rescued"] = True
-                stages["bridge_to_db"] = br
-            else:
-                stages["bridge_to_db"] = {"ok": False, "stage_result": {},
-                                          "error": "采集未成功,跳过入库"}
-        else:
-            stages["bridge_to_db"] = _run_bridge_deterministic(
-                str(collect.get("run_dir") or ""), p.get("market", "ph"))
+        # “采集 N 个”按 N 个新增且成本合格的入库商品计数。已有商品/成本过滤
+        # 不占用目标；采集器会沿供应商队列继续补采，最多再试三轮，避免无限抓取。
+        target_new = max(1, int(p.get("target") or 10))
+        collect_attempts, bridge_attempts = [], []
+        for attempt in range(4):
+            remaining = max(1, target_new - sum(
+                int(_stage_dict(item).get("imported") or 0) for item in bridge_attempts))
+            attempt_params = {**p, "target": remaining}
+            collect_stage, bridge_stage = _collect_and_bridge(
+                attempt_params, timeouts.get("collect", 420))
+            collect_attempts.append(collect_stage)
+            bridge_attempts.append(bridge_stage)
+            imported = sum(int(_stage_dict(item).get("imported") or 0)
+                           for item in bridge_attempts)
+            if imported >= target_new:
+                break
+            # 采集器或入库桥接完全失败时继续下一轮没有意义。
+            if not _stage_dict(bridge_stage) and _stage_err(bridge_stage):
+                break
+        stages["collect"] = _merge_capture_attempts(collect_attempts, "collect")
+        stages["bridge_to_db"] = _merge_capture_attempts(bridge_attempts, "bridge_to_db")
+        stages["bridge_to_db"]["stage_result"]["target_new"] = target_new
+        stages["bridge_to_db"]["stage_result"]["attempts"] = len(bridge_attempts)
         with _lock:
             st = _STATE.get(run_id)
             if st:
@@ -1095,6 +1099,50 @@ def _stage_err(stage_res):
     if isinstance(sr, dict) and sr.get("error"):
         return sr["error"]
     return None
+
+
+def _collect_and_bridge(params, timeout_s):
+    """运行一轮采集并把真实 capture 写入平台库。"""
+    started = time.time()
+    collect_stage = tasks.run_stage("collect", params, timeout_s=timeout_s)
+    collect = _stage_dict(collect_stage)
+    if _stage_err(collect_stage):
+        # agent 收尾 JSON 偶发失败时，仍优先使用本轮新生成的真实采集目录。
+        rescued_dir = _find_recent_collect_run(after_ts=started)
+        if rescued_dir:
+            bridge_stage = _run_bridge_deterministic(
+                rescued_dir, params.get("market", "ph"))
+            if isinstance(bridge_stage.get("stage_result"), dict):
+                bridge_stage["stage_result"]["rescued"] = True
+            return collect_stage, bridge_stage
+        return collect_stage, {"ok": False, "stage_result": {},
+                               "error": "采集未成功,跳过入库"}
+    return collect_stage, _run_bridge_deterministic(
+        str(collect.get("run_dir") or ""), params.get("market", "ph"))
+
+
+def _merge_capture_attempts(attempts, stage):
+    """合并补采轮次结果，卡片展示累计真实数量而不是最后一轮数量。"""
+    numeric = ("captured", "rejected", "imported", "already", "skipped", "cost_filtered")
+    merged = {key: 0 for key in numeric}
+    merged["errors"] = []
+    merged["run_dirs"] = []
+    errors = []
+    for item in attempts:
+        result = _stage_dict(item)
+        for key in numeric:
+            merged[key] += int(result.get(key) or 0)
+        merged["errors"].extend(result.get("errors") or [])
+        run_dir = result.get("run_dir")
+        if run_dir:
+            merged["run_dirs"].append(str(run_dir))
+        err = _stage_err(item)
+        if err:
+            errors.append(str(err))
+    merged["attempts"] = len(attempts)
+    merged["summary"] = "补采 %d 轮" % len(attempts)
+    return {"ok": bool(attempts) and not errors, "stage": stage,
+            "stage_result": merged, "error": "; ".join(errors[:2])}
 
 
 def _find_recent_collect_run(after_ts=None, fresh_seconds=1800):
@@ -1191,6 +1239,12 @@ def build_bridge_card(run_id, stages):
               ("已存在", str(already)),
               ("跳过", str(skipped)),
               ("run_id", run_id)]
+    target_new = int(br.get("target_new") or 0)
+    attempts = int(br.get("attempts") or 0)
+    if target_new:
+        fields.insert(2, ("新增目标", str(target_new)))
+    if attempts > 1:
+        fields.insert(-1, ("补采轮次", str(attempts)))
     if cost_filtered:
         bounds = br.get("cost_bounds") or {}
         lo, hi = float(bounds.get("min") or 0), float(bounds.get("max") or 0)
