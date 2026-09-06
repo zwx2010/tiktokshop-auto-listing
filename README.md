@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart LR
-    A[运营在飞书群发指令<br/>"上架一批 PH 站配饰"] --> B{Claude Agent<br/>意图解析}
+    A["运营在飞书群发指令<br/>「上架一批 PH 站配饰」"] --> B{"Claude Agent<br/>意图解析"}
     B -->|采集指令| C[1688 CDP 采集<br/>Edge 调试端口抓取]
     B -->|上架指令| D[采集入库]
     C --> D
