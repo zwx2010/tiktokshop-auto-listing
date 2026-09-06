@@ -134,9 +134,20 @@ class TaskRepositoryTests(unittest.TestCase):
         fresh.close()
 
     def test_mysql_two_workers_only_one_claims_same_task(self):
+        from sqlalchemy import text
+        from sqlalchemy.exc import SQLAlchemyError
         from app.database import SessionLocal
         if SessionLocal is None:
             self.skipTest("configured MySQL required for concurrency proof")
+
+        probe = SessionLocal()
+        try:
+            probe.execute(text("SELECT 1"))
+        except SQLAlchemyError:
+            self.skipTest("reachable MySQL required for concurrency proof")
+        finally:
+            probe.close()
+
         from app.infrastructure.task_repository import SqlAlchemyTaskRepository
         from app.models import Task
         import threading
