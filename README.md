@@ -2,6 +2,12 @@
 
 用 FastAPI + MySQL 串起来的 TikTok Shop 多账号运营工具：1688 采集 → 清洗定价 → 三语文案 → 审核 → CDP 真实上架 → 飞书机器人审批。外部服务只记录真实结果；缺少凭据或运行环境时明确返回未配置/不可用，不伪造成功。
 
+## 72 秒项目演示
+
+![TikTok Shop AI 自动化平台公开演示](docs/demo/tiktokshop-auto-listing-demo.gif)
+
+> 演示画面全部使用脱敏样例数据，不包含商家信息、账号凭据或真实发布操作。它展示的是系统业务闭环、混合 RAG、审批门禁、失败恢复与测试验证；生成方式见 [`docs/demo/README.md`](docs/demo/README.md)。
+
 ## 架构流程
 
 运营在飞书群里发一句自然语言指令，流水线自动跑完全程，直到商品真实发布到 TikTok Shop：

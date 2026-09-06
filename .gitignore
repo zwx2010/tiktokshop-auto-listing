@@ -1,6 +1,7 @@
 # ── Python ────────────────────────────────────────────────
 __pycache__/
 *.pyc
+docs/demo/frames/
 
 # ── 敏感配置（含飞书 app_secret / verification_token，绝不上传）──
 config/*.local.json
