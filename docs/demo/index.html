@@ -3,177 +3,37 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TikTok Shop AI 自动化平台｜公开演示</title>
+  <title>飞书机器人跨境铺货工作流｜公开演示</title>
   <style>
-    :root {
-      --bg: #07111f;
-      --panel: #0d1b2d;
-      --panel-2: #12243a;
-      --line: #28405c;
-      --text: #eef6ff;
-      --muted: #8fa7c0;
-      --cyan: #38d6ca;
-      --blue: #6697ff;
-      --green: #49d391;
-      --amber: #ffc45c;
-      --red: #ff7381;
-    }
-    * { box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; }
-    body {
-      margin: 0;
-      color: var(--text);
-      background:
-        radial-gradient(circle at 8% 0%, rgba(56,214,202,.15), transparent 30%),
-        radial-gradient(circle at 90% 12%, rgba(102,151,255,.13), transparent 32%),
-        var(--bg);
-      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-      overflow: hidden;
-    }
-    .app { width: 1280px; height: 720px; padding: 24px 32px 28px; position: relative; }
-    header { display: flex; align-items: center; justify-content: space-between; height: 58px; }
-    .brand { display: flex; align-items: center; gap: 13px; }
-    .logo { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; background: linear-gradient(135deg, var(--cyan), var(--blue)); color: #06101d; font-weight: 900; }
-    h1 { margin: 0; font-size: 22px; letter-spacing: .2px; }
-    .subtitle { color: var(--muted); font-size: 12px; margin-top: 4px; }
-    .demo-badge { border: 1px solid rgba(255,196,92,.5); color: var(--amber); background: rgba(255,196,92,.09); border-radius: 999px; padding: 8px 13px; font-size: 12px; }
-    .progress { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; margin: 13px 0 18px; }
-    .progress span { height: 4px; border-radius: 6px; background: #1c3149; }
-    .progress span.on { background: linear-gradient(90deg, var(--cyan), var(--blue)); }
-    .screen { display: none; height: 567px; }
-    .screen.active { display: block; }
-    .eyebrow { color: var(--cyan); font-size: 13px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; }
-    .screen h2 { font-size: 29px; margin: 8px 0 5px; }
-    .lead { margin: 0 0 19px; color: var(--muted); font-size: 14px; }
-    .grid { display: grid; gap: 14px; }
-    .cols-4 { grid-template-columns: repeat(4, 1fr); }
-    .cols-3 { grid-template-columns: repeat(3, 1fr); }
-    .cols-2 { grid-template-columns: 1.1fr .9fr; }
-    .card { background: linear-gradient(180deg, rgba(18,36,58,.96), rgba(13,27,45,.96)); border: 1px solid var(--line); border-radius: 14px; padding: 17px; }
-    .metric .value { font-size: 32px; font-weight: 750; color: var(--cyan); }
-    .metric .label { color: var(--muted); font-size: 12px; margin-top: 2px; }
-    .pipeline { margin-top: 16px; display: grid; grid-template-columns: repeat(9, 1fr); gap: 7px; align-items: stretch; }
-    .stage { min-height: 92px; padding: 12px 8px; text-align: center; border: 1px solid var(--line); border-radius: 12px; background: rgba(13,27,45,.85); position: relative; }
-    .stage:not(:last-child)::after { content: "›"; position: absolute; right: -8px; top: 31px; color: var(--cyan); font-size: 22px; z-index: 3; }
-    .stage .icon { font-size: 20px; }
-    .stage b { display: block; font-size: 12px; margin-top: 7px; }
-    .stage small { color: var(--muted); font-size: 9px; }
-    .note { margin-top: 16px; display: flex; gap: 12px; align-items: center; padding: 13px 16px; border-left: 3px solid var(--cyan); background: rgba(56,214,202,.07); color: #cceeea; font-size: 13px; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th { text-align: left; color: var(--muted); font-weight: 600; padding: 10px; border-bottom: 1px solid var(--line); }
-    td { padding: 11px 10px; border-bottom: 1px solid rgba(40,64,92,.65); }
-    tr:last-child td { border: 0; }
-    .pill { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; }
-    .ok { color: var(--green); background: rgba(73,211,145,.1); }
-    .warn { color: var(--amber); background: rgba(255,196,92,.1); }
-    .bad { color: var(--red); background: rgba(255,115,129,.1); }
-    .info { color: #9abaff; background: rgba(102,151,255,.12); }
-    .title { font-weight: 700; font-size: 15px; margin-bottom: 12px; }
-    .kv { display: grid; grid-template-columns: 130px 1fr; gap: 9px; font-size: 12px; }
-    .kv span:nth-child(odd) { color: var(--muted); }
-    .timeline { display: grid; gap: 10px; }
-    .event { display: grid; grid-template-columns: 70px 18px 1fr; gap: 9px; align-items: center; font-size: 12px; }
-    .event time { color: var(--muted); font-family: Consolas, monospace; }
-    .dot { width: 10px; height: 10px; border: 2px solid var(--cyan); border-radius: 50%; }
-    .rule { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
-    .rule:last-child { border: 0; }
-    .quote { font-size: 17px; line-height: 1.7; color: #d9e8f8; }
-    .quote em { color: var(--cyan); font-style: normal; }
-    .gate { padding: 14px; border-radius: 12px; border: 1px solid var(--line); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
-    .gate strong { font-size: 13px; }
-    .blocked { border-color: rgba(255,115,129,.45); background: rgba(255,115,129,.06); }
-    .result { margin-top: 14px; padding: 18px; border-radius: 13px; background: rgba(255,196,92,.08); border: 1px solid rgba(255,196,92,.35); }
-    .result h3 { color: var(--amber); margin: 0 0 7px; }
-    .code { font-family: Consolas, monospace; color: #b8cae0; font-size: 11px; }
-    .footer { position: absolute; bottom: 14px; left: 32px; right: 32px; display: flex; justify-content: space-between; color: #607993; font-size: 10px; }
+    :root{--panel:#fff;--line:#e5e8ef;--text:#1f2329;--muted:#8f959e;--blue:#3370ff;--cyan:#14c7c7;--green:#34c724;--nav:#f7f8fa}
+    *{box-sizing:border-box}html,body{width:100%;height:100%}body{margin:0;background:#e9edf4;color:var(--text);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;overflow:hidden}.app{width:1280px;height:720px;background:var(--panel);display:grid;grid-template-columns:220px 1fr;position:relative}.sidebar{background:var(--nav);border-right:1px solid var(--line);padding:18px 14px}.brand{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;padding:4px 8px 20px}.logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(145deg,#35d4d4,#3370ff);color:#fff;display:grid;place-items:center}.search{height:34px;border-radius:8px;background:#eaedf2;color:#a2a8b0;padding:8px 12px;font-size:12px;margin-bottom:14px}.nav{padding:10px 12px;border-radius:8px;font-size:13px;margin:4px 0}.nav.active{background:#e8efff;color:var(--blue);font-weight:700}.group-title{color:#a2a8b0;font-size:11px;padding:18px 12px 8px}.chat-item{display:flex;gap:9px;align-items:center;padding:9px;border-radius:8px;background:#eaf0ff;font-size:12px;font-weight:650}.avatar{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:#d9e5ff;color:var(--blue);font-weight:800}.main{display:grid;grid-template-rows:62px 1fr}.topbar{border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 22px}.title{font-size:16px;font-weight:700}.members{font-size:12px;color:var(--muted)}.demo{padding:7px 12px;border-radius:999px;background:#fff5e6;color:#d96b00;border:1px solid #ffd79a;font-size:11px}.content{background:#f5f6f8;position:relative;overflow:hidden}.chat{width:820px;height:100%;margin:0 auto;padding:18px 0 54px}.date{text-align:center;color:#a2a8b0;font-size:11px;margin-bottom:13px}.msg{display:flex;gap:10px;margin:12px 0;align-items:flex-start}.msg.user{flex-direction:row-reverse}.msg .avatar{flex:0 0 auto}.bubble{max-width:690px;background:#fff;border:1px solid var(--line);border-radius:4px 14px 14px 14px;padding:11px 14px;box-shadow:0 1px 2px rgba(31,35,41,.04);font-size:13px;line-height:1.6}.user .bubble{background:#e8f0ff;border-color:#d5e2ff;border-radius:14px 4px 14px 14px}.name{font-size:11px;color:var(--muted);margin-bottom:4px}.user .name{text-align:right}.card{width:650px;background:#fff;border:1px solid #dfe3eb;border-radius:12px;overflow:hidden;box-shadow:0 3px 12px rgba(31,35,41,.07)}.card-head{background:linear-gradient(115deg,#eff4ff,#eefbfb);padding:14px 17px;border-bottom:1px solid var(--line)}.card-head strong{font-size:15px}.card-head p{margin:4px 0 0;font-size:11px;color:#69707a}.card-body{padding:13px 17px}.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.step{background:#f6f7f9;border-radius:8px;padding:9px 8px;font-size:11px;text-align:center;color:#69707a}.step b{display:block;color:#1f2329;font-size:12px;margin-bottom:3px}.step.done{background:#edf9ee;color:#359b2c}.step.running{background:#edf3ff;color:var(--blue)}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:11px}.metric{background:#f6f7f9;border-radius:8px;padding:10px}.metric b{font-size:20px;color:var(--blue);display:block}.metric span{font-size:10px;color:#8f959e}.row{display:flex;justify-content:space-between;border-bottom:1px solid #eff1f5;padding:7px 1px;font-size:11px}.row:last-child{border:0}.pill{padding:3px 7px;border-radius:999px;font-size:9px;font-weight:700}.ok{background:#e8f8e6;color:#2c9b27}.wait{background:#fff2dc;color:#d46b08}.bad{background:#ffeded;color:#d83b3b}.info{background:#e8f0ff;color:#2e64db}.buttons{display:flex;gap:8px;padding:11px 17px;border-top:1px solid var(--line)}.button{border:1px solid #cfd5df;border-radius:7px;padding:7px 12px;font-size:11px;background:#fff}.button.primary{background:var(--blue);border-color:var(--blue);color:#fff}.button.safe{color:#247b21;border-color:#8bd184}.progress{height:6px;background:#e8ebf0;border-radius:10px;overflow:hidden;margin:9px 0}.progress i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--cyan))}.callback{display:flex;gap:12px;align-items:center}.check{width:40px;height:40px;border-radius:50%;background:#e8f8e6;color:var(--green);display:grid;place-items:center;font-size:23px}.small{font-size:10px;color:var(--muted)}.sheet{height:100%;background:#fff}.sheetbar{height:52px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 18px}.sheetname{font-weight:700}.toolbar{height:42px;background:#fafbfc;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;padding:0 18px;font-size:11px;color:#59616d}.tablewrap{padding:12px 18px}.table-note{padding:10px 13px;background:#fff7e8;border:1px solid #ffe0a6;border-radius:8px;color:#b46600;font-size:11px;margin-bottom:10px}.sheet table{width:100%;border-collapse:collapse;font-size:10px}.sheet th{background:#f2f4f7;color:#646b75;text-align:left;padding:8px;border:1px solid #e2e5eb}.sheet td{padding:8px;border:1px solid #e7e9ee}.market{color:#635bdb;font-weight:700}.status{color:#249c32;font-weight:700}.mask{color:#a1a7b0}.cursor{position:absolute;width:20px;height:26px;right:285px;bottom:85px;transform:rotate(-18deg);filter:drop-shadow(0 1px 1px #fff)}.cursor:before{content:"";display:block;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:24px solid #202124}.footer{position:absolute;bottom:10px;left:235px;right:14px;display:flex;justify-content:space-between;color:#a1a7b0;font-size:9px}.counter{display:flex;gap:4px}.counter i{width:18px;height:3px;background:#d8dce3;border-radius:5px}.counter i.on{background:var(--blue)}
   </style>
 </head>
 <body>
 <div class="app">
-  <header>
-    <div class="brand"><div class="logo">AI</div><div><h1>TikTok Shop 跨境铺货自动化平台</h1><div class="subtitle">Python · FastAPI · MySQL · Hybrid RAG · Feishu · Browser Automation</div></div></div>
-    <div class="demo-badge">公开演示 · 全部为脱敏样例数据</div>
-  </header>
-  <div class="progress" id="progress"></div>
-
-  <section class="screen" data-step="1">
-    <div class="eyebrow">01 / Business Overview</div><h2>从商品采集到发布回写，一条可审核的业务闭环</h2>
-    <p class="lead">系统不是单点脚本，而是把跨境铺货中的规则、AI 与人工决策串成可恢复的工作流。</p>
-    <div class="grid cols-4">
-      <div class="card metric"><div class="value">3</div><div class="label">目标市场 PH / TH / VN</div></div>
-      <div class="card metric"><div class="value">24</div><div class="label">本批次候选商品</div></div>
-      <div class="card metric"><div class="value">96</div><div class="label">清洗后 SKU</div></div>
-      <div class="card metric"><div class="value">0</div><div class="label">未授权真实发布</div></div>
-    </div>
-    <div class="pipeline">
-      <div class="stage"><div class="icon">🔎</div><b>采集</b><small>1688 / PDD</small></div><div class="stage"><div class="icon">🧹</div><b>清洗</b><small>字段 / 去重</small></div>
-      <div class="stage"><div class="icon">💰</div><b>定价</b><small>多市场规则</small></div><div class="stage"><div class="icon">✍️</div><b>文案</b><small>三语 RAG</small></div>
-      <div class="stage"><div class="icon">🖼️</div><b>审图</b><small>尺寸 / 汉字</small></div><div class="stage"><div class="icon">🛡️</div><b>门禁</b><small>规则校验</small></div>
-      <div class="stage"><div class="icon">✅</div><b>审批</b><small>飞书人工确认</small></div><div class="stage"><div class="icon">🚀</div><b>发布</b><small>CDP / API</small></div>
-      <div class="stage"><div class="icon">↩️</div><b>回写</b><small>状态 / 审计</small></div>
-    </div>
-    <div class="note"><b>核心设计：</b> 外部系统没有明确返回成功，就不记录“已发布”。</div>
-  </section>
-
-  <section class="screen" data-step="2">
-    <div class="eyebrow">02 / Batch Processing</div><h2>一个批次如何被拆解、执行并安全恢复</h2><p class="lead">批次、商品、SKU、Listing 和审批均有独立状态；重复请求不会重复建品或重复发布。</p>
-    <div class="grid cols-2">
-      <div class="card"><div class="title">批次 TKS-DEMO-0906</div><table><thead><tr><th>任务</th><th>市场</th><th>数量</th><th>状态</th></tr></thead><tbody>
-        <tr><td>采集与字段清洗</td><td>ALL</td><td>24</td><td><span class="pill ok">完成</span></td></tr>
-        <tr><td>SKU 变体规范化</td><td>ALL</td><td>96</td><td><span class="pill ok">完成</span></td></tr>
-        <tr><td>Listing 本地化</td><td>PH / TH / VN</td><td>72</td><td><span class="pill info">处理中</span></td></tr>
-        <tr><td>人工审批</td><td>ALL</td><td>1 批</td><td><span class="pill warn">等待</span></td></tr>
-      </tbody></table></div>
-      <div class="card"><div class="title">可靠性机制</div><div class="kv">
-        <span>dedup_key</span><b>source + goods_id + market</b><span>任务领取</span><b>数据库原子更新</b><span>Worker 租约</span><b>10 分钟，超时可恢复</b><span>失败重试</span><b>保留原因与尝试次数</b><span>发布幂等键</span><b>batch + listing + account</b><span>审计记录</span><b>操作人 / 时间 / 决策</b>
-      </div><div class="note"><b>结果：</b> 服务重启或多 Worker 并发时，任务仍可继续且不会重复执行。</div></div>
-    </div>
-  </section>
-
-  <section class="screen" data-step="3">
-    <div class="eyebrow">03 / Hybrid RAG</div><h2>规则先把关，再用真实范例提升多语言文案质量</h2><p class="lead">结构化规则负责确定性约束，向量检索负责找到同市场、同类目的可参考表达。</p>
-    <div class="grid cols-3">
-      <div class="card"><div class="title">规则层 · CHECK</div><div class="rule"><span>违禁词扫描</span><span class="pill ok">通过</span></div><div class="rule"><span>类目白名单</span><span class="pill ok">通过</span></div><div class="rule"><span>SKU 变体 ≤ 50 字符</span><span class="pill ok">通过</span></div><div class="rule"><span>图片含中文文字</span><span class="pill bad">1 张失败</span></div></div>
-      <div class="card"><div class="title">向量层 · RETRIEVE</div><div class="kv"><span>目标市场</span><b>Thailand</b><span>目标类目</span><b>Fashion Accessories</b><span>召回范例</span><b>Top 3</b><span>相似度</span><b>0.89 / 0.86 / 0.81</b><span>语料来源</span><b>已审核真实 Listing</b></div></div>
-      <div class="card"><div class="title">生成结果 · COPY</div><div class="quote">Minimalist accessory for everyday styling.<br><em>ดีไซน์เรียบง่าย ใส่ได้ทุกวัน</em><br>Phù hợp nhiều phong cách hằng ngày.</div><div class="note">只对审图通过的素材生成并进入审批。</div></div>
-    </div>
-  </section>
-
-  <section class="screen" data-step="4">
-    <div class="eyebrow">04 / Human Approval</div><h2>AI 可以执行，但真实发布必须经过明确授权</h2><p class="lead">飞书审批把业务人员放在关键决策点，所有门禁通过后才生成一次性上传授权。</p>
-    <div class="grid cols-2">
-      <div class="card"><div class="title">飞书批次审批摘要</div><div class="kv"><span>候选商品</span><b>24</b><span>审图通过</span><b>23</b><span>规则命中</span><b>0 个高风险</b><span>目标市场</span><b>PH / TH / VN</b><span>成本区间</span><b>已脱敏</b><span>当前决策</span><b>等待人工批准</b></div></div>
-      <div class="card"><div class="title">发布门禁</div><div class="gate"><strong>文案完整</strong><span class="pill ok">PASS</span></div><div class="gate"><strong>图片质检</strong><span class="pill warn">23 / 24</span></div><div class="gate"><strong>平台规则</strong><span class="pill ok">PASS</span></div><div class="gate blocked"><strong>上传授权</strong><span class="pill bad">NOT GRANTED</span></div><div class="result"><h3>安全阻断</h3><div>当前批次不会触发真实 CDP 上架。</div><div class="code">reason=upload_authorization_missing</div></div></div>
-    </div>
-  </section>
-
-  <section class="screen" data-step="5">
-    <div class="eyebrow">05 / Observability</div><h2>每一次状态变化，都能被查询、恢复和审计</h2><p class="lead">系统区分 configured 与 confirmed：配置文件存在不等于第三方服务已经连通。</p>
-    <div class="grid cols-2">
-      <div class="card"><div class="title">集成状态</div><table><thead><tr><th>服务</th><th>配置</th><th>连通</th><th>说明</th></tr></thead><tbody><tr><td>LLM Provider</td><td><span class="pill ok">configured</span></td><td><span class="pill ok">confirmed</span></td><td>探测成功</td></tr><tr><td>Feishu</td><td><span class="pill ok">configured</span></td><td><span class="pill warn">unknown</span></td><td>未发送测试消息</td></tr><tr><td>TikTok Shop</td><td><span class="pill bad">not configured</span></td><td>—</td><td>无公开凭据</td></tr><tr><td>CDP Browser</td><td><span class="pill ok">configured</span></td><td><span class="pill bad">unavailable</span></td><td>调试端口未启动</td></tr></tbody></table></div>
-      <div class="card"><div class="title">任务事件</div><div class="timeline"><div class="event"><time>10:03:11</time><span class="dot"></span><span>任务被 Worker 原子领取</span></div><div class="event"><time>10:03:14</time><span class="dot"></span><span>规则检查完成，1 张图片失败</span></div><div class="event"><time>10:03:18</time><span class="dot"></span><span>RAG 文案生成完成</span></div><div class="event"><time>10:03:21</time><span class="dot"></span><span>审批卡已生成，等待人工操作</span></div><div class="event"><time>10:03:21</time><span class="dot"></span><span>发布被授权门禁安全阻断</span></div></div></div>
-    </div>
-  </section>
-
-  <section class="screen" data-step="6">
-    <div class="eyebrow">06 / Verification</div><h2>可验证的工程结果，而不只是流程概念图</h2><p class="lead">核心逻辑覆盖自动化测试；敏感配置不进入仓库；失败路径与成功路径同样被验证。</p>
-    <div class="grid cols-3">
-      <div class="card metric"><div class="value">58</div><div class="label">自动化测试通过</div><div class="note">API 生命周期、工作流、审批、幂等、恢复、集成状态</div></div>
-      <div class="card metric"><div class="value">1</div><div class="label">环境相关测试跳过</div><div class="note">未连接 MySQL 时明确跳过，不伪造成功。</div></div>
-      <div class="card metric"><div class="value">0</div><div class="label">高置信度密钥泄漏</div><div class="note">本地配置文件由 .gitignore 隔离。</div></div>
-    </div>
-    <div class="result" style="margin-top:18px"><h3>项目价值</h3><div style="font-size:18px;line-height:1.7">把跨境铺货中的重复劳动变成 <b>可执行、可审核、可恢复、可追踪</b> 的 AI 自动化系统。</div><div class="code" style="margin-top:8px">github.com/zwx2010/tiktokshop-auto-listing</div></div>
-  </section>
-
-  <div class="footer"><span>Portfolio Demo · No credentials or merchant data included</span><span id="counter"></span></div>
+  <aside class="sidebar"><div class="brand"><div class="logo">飞</div><span>飞书</span></div><div class="search">🔍 搜索</div><div class="nav">💬 消息</div><div class="nav active">🤖 机器人工作台</div><div class="nav">📊 多维表格</div><div class="group-title">置顶群组</div><div class="chat-item"><div class="avatar">AI</div><span>跨境铺货自动化</span></div><div class="group-title">应用</div><div class="nav">📦 选品与上架</div><div class="nav">🛡️ 审批记录</div></aside>
+  <main class="main"><header class="topbar"><div><div class="title" id="page-title">跨境铺货自动化</div><div class="members">运营团队 · AI 上架机器人</div></div><div class="demo">公开演示 · 脱敏样例数据</div></header><div class="content" id="content"></div></main>
+  <div class="footer"><span>按项目真实工作流结构制作；不包含商家账号、密钥或真实商品数据</span><span class="counter" id="counter"></span></div>
 </div>
 <script>
-  const params = new URLSearchParams(location.search);
-  const step = Math.max(1, Math.min(6, Number(params.get('step') || 1)));
-  document.querySelector(`[data-step="${step}"]`).classList.add('active');
-  const progress = document.getElementById('progress');
-  for (let i = 1; i <= 6; i++) progress.insertAdjacentHTML('beforeend', `<span class="${i <= step ? 'on' : ''}"></span>`);
-  document.getElementById('counter').textContent = `${String(step).padStart(2,'0')} / 06`;
+const n=Math.max(1,Math.min(6,Number(new URLSearchParams(location.search).get('step')||1)));
+const user=(text)=>`<div class="msg user"><div class="avatar">我</div><div><div class="name">运营</div><div class="bubble">${text}</div></div></div>`;
+const bot=(text)=>`<div class="msg"><div class="avatar">AI</div><div><div class="name">AI 上架机器人</div><div class="bubble">${text}</div></div></div>`;
+const wrap=(html)=>`<div class="chat"><div class="date">今天 10:03</div>${html}</div>`;
+const taskCard=`<div class="msg"><div class="avatar">AI</div><div><div class="name">AI 上架机器人</div><div class="card"><div class="card-head"><strong>📦 批次 TKS-DEMO-0906 已受理</strong><p>目标市场：PH / TH / VN · 数据来源：1688 配饰</p></div><div class="card-body"><div class="steps"><div class="step done"><b>✓ 采集</b>24 件</div><div class="step done"><b>✓ 清洗</b>96 SKU</div><div class="step running"><b>● 文案</b>三语 RAG</div><div class="step"><b>○ 审图</b>等待</div></div><div class="progress"><i style="width:62%"></i></div><div class="small">任务已持久化，服务重启后可从当前阶段恢复。</div></div></div></div></div>`;
+const approval=`<div class="msg"><div class="avatar">AI</div><div><div class="name">AI 上架机器人</div><div class="card"><div class="card-head"><strong>🛡️ 上架前审批</strong><p>所有自动检查已完成，请确认本批次处理方式</p></div><div class="card-body"><div class="metrics"><div class="metric"><b>24</b><span>候选商品</span></div><div class="metric"><b>23</b><span>审图通过</span></div><div class="metric"><b>72</b><span>三站 Listing</span></div><div class="metric"><b>0</b><span>高风险命中</span></div></div><div class="row"><span>规则层：违禁词 / 类目 / 字段上限</span><span class="pill ok">PASS</span></div><div class="row"><span>向量检索：同市场真实文案范例</span><span class="pill ok">Top 3</span></div><div class="row"><span>图片质检：1 张包含中文文字</span><span class="pill wait">已隔离</span></div><div class="row"><span>真实发布授权</span><span class="pill bad">等待人工确认</span></div></div><div class="buttons"><span class="button primary">通过全部</span><span class="button safe">仅通过审图 OK</span><span class="button">驳回并修改</span></div></div></div></div>`;
+const publish=`<div class="msg"><div class="avatar">AI</div><div><div class="name">AI 上架机器人</div><div class="card"><div class="card-head"><strong>🚀 已获得一次性上传授权</strong><p>审批人：运营（演示） · 决策：仅发布审图通过项</p></div><div class="card-body"><div class="row"><span>生成发布幂等键</span><span class="pill ok">完成</span></div><div class="row"><span>PH 店铺批量上架</span><span class="pill ok">23 / 23</span></div><div class="row"><span>TH 店铺批量上架</span><span class="pill info">18 / 23</span></div><div class="row"><span>VN 店铺批量上架</span><span class="pill wait">排队中</span></div><div class="progress"><i style="width:73%"></i></div><div class="small">外部平台未明确返回成功的记录不会写入“上架成功”。</div></div></div></div></div>`;
+const done=`<div class="msg"><div class="avatar">AI</div><div><div class="name">AI 上架机器人</div><div class="card"><div class="card-head"><strong>✅ 批次发布完成</strong><p>TKS-DEMO-0906 · 已自动回写多维表格与审计记录</p></div><div class="card-body"><div class="callback"><div class="check">✓</div><div><b>69 条 Listing 获得平台成功回执</b><div class="small">PH 23 · TH 23 · VN 23 · 重复发布 0</div></div></div><div class="row"><span>失败与待人工处理</span><span class="pill ok">0</span></div><div class="row"><span>被审图门禁隔离</span><span class="pill wait">1 件商品</span></div><div class="row"><span>审批与发布审计</span><span class="pill ok">已记录</span></div></div><div class="buttons"><span class="button primary">查看多维表格</span><span class="button">查看失败明细</span></div></div></div></div>`;
+const screens={
+1:wrap(user('采集 24 个 1688 配饰，生成 PH、TH、VN 三站候选商品。')+bot('收到。我会依次执行采集、字段清洗、成本识别、SKU 去重和多市场定价；完成后回传批次卡片。')),
+2:wrap(user('继续生成三语 Listing，并检查图片与平台规则。')+taskCard),
+3:wrap(user('这批商品可以上架吗？请先给我审批结果，不要直接发布。')+approval),
+4:wrap(user('仅通过审图 OK 的商品，批准本批次上架。')+publish+'<div class="cursor"></div>'),
+5:wrap(user('查询刚才批次的最终结果。')+done),
+6:`<div class="sheet"><div class="sheetbar"><div class="sheetname">📊 TikTok 三站上架结果</div><div class="small">最后同步：今天 10:05</div></div><div class="toolbar"><span>视图：上架结果</span><span>筛选</span><span>分组：批次</span><span>排序：更新时间 ↓</span></div><div class="tablewrap"><div class="table-note">演示视图：商品、店铺和平台 ID 均已脱敏；状态结构与真实工作流一致。</div><table><thead><tr><th>批次</th><th>商品</th><th>市场</th><th>Listing ID</th><th>图片质检</th><th>审批</th><th>发布状态</th><th>回执时间</th></tr></thead><tbody><tr><td>TKS-DEMO-0906</td><td>Minimalist Hair Clip</td><td class="market">PH</td><td class="mask">***4821</td><td><span class="pill ok">通过</span></td><td><span class="pill ok">已批准</span></td><td class="status">✓ 上架成功</td><td>10:04:31</td></tr><tr><td>TKS-DEMO-0906</td><td>Minimalist Hair Clip</td><td class="market">TH</td><td class="mask">***5934</td><td><span class="pill ok">通过</span></td><td><span class="pill ok">已批准</span></td><td class="status">✓ 上架成功</td><td>10:04:48</td></tr><tr><td>TKS-DEMO-0906</td><td>Minimalist Hair Clip</td><td class="market">VN</td><td class="mask">***6057</td><td><span class="pill ok">通过</span></td><td><span class="pill ok">已批准</span></td><td class="status">✓ 上架成功</td><td>10:05:02</td></tr><tr><td>TKS-DEMO-0906</td><td>Pearl Bow Accessory</td><td class="market">PH</td><td class="mask">***7198</td><td><span class="pill ok">通过</span></td><td><span class="pill ok">已批准</span></td><td class="status">✓ 上架成功</td><td>10:04:35</td></tr><tr><td>TKS-DEMO-0906</td><td>Pearl Bow Accessory</td><td class="market">TH</td><td class="mask">***8210</td><td><span class="pill ok">通过</span></td><td><span class="pill ok">已批准</span></td><td class="status">✓ 上架成功</td><td>10:04:52</td></tr><tr><td>TKS-DEMO-0906</td><td>Printed Gift Card</td><td class="market">—</td><td class="mask">—</td><td><span class="pill bad">中文文字</span></td><td><span class="pill wait">已隔离</span></td><td>未触发发布</td><td>10:03:26</td></tr></tbody></table></div></div>`
+};
+document.getElementById('content').innerHTML=screens[n];if(n===6)document.getElementById('page-title').textContent='TikTok 三站上架结果 · 多维表格';
+const c=document.getElementById('counter');for(let i=1;i<=6;i++)c.insertAdjacentHTML('beforeend',`<i class="${i<=n?'on':''}"></i>`);
 </script>
 </body>
 </html>

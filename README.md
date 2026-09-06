@@ -6,7 +6,7 @@
 
 ![TikTok Shop AI 自动化平台公开演示](docs/demo/tiktokshop-auto-listing-demo.gif)
 
-> 演示画面全部使用脱敏样例数据，不包含商家信息、账号凭据或真实发布操作。它展示的是系统业务闭环、混合 RAG、审批门禁、失败恢复与测试验证；生成方式见 [`docs/demo/README.md`](docs/demo/README.md)。
+> 演示画面全部使用脱敏样例数据，不包含商家信息、账号凭据或真实发布操作。它直观展示“飞书发指令 → 机器人执行与审批回卡 → 人工授权 → 发布结果回调 → 多维表格回写”的业务闭环；生成方式见 [`docs/demo/README.md`](docs/demo/README.md)。
 
 ## 架构流程
 
